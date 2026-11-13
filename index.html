@@ -129,14 +129,18 @@ input[type=range]{flex:1;accent-color:var(--acc)}
 const $ = id => document.getElementById(id);
 
 /* ---------- Плёнки / образы ---------- */
+// Плёнки: mix — спектральная чувствительность (R,G,B), con — контраст, sc — S-кривая,
+// blk — провал теней, fade — подъём чёрного, grain — сила зерна, gs — размер зерна, vig — виньетка
 const LOOKS = [
-  {id:'nat',    name:'NATURAL',  bw:0, sat:1,   con:1,    warm:0,    fade:0,   grain:0,   vig:0},
-  {id:'trix',   name:'TRI-X',    bw:1, mix:[.35,.50,.15], con:1.35, fade:.03, grain:.09, vig:.25},
-  {id:'hard',   name:'HARD B&W', bw:1, mix:[.45,.45,.10], con:1.75, fade:0,   grain:.15, vig:.40},
-  {id:'soft',   name:'SOFT B&W', bw:1, mix:[.30,.59,.11], con:1.05, fade:.08, grain:.05, vig:.10},
-  {id:'film',   name:'FILM',     bw:0, sat:.9,  con:1.05, warm:.5,   fade:.05, grain:.05, vig:.15},
-  {id:'chrome', name:'CHROME',   bw:0, sat:.7,  con:1.25, warm:-.15, fade:.03, grain:.04, vig:.20},
-  {id:'night',  name:'NIGHT',    bw:0, sat:.85, con:1.2,  warm:-.45, fade:.02, grain:.08, vig:.30},
+  {id:'trix',   name:'TRI-X 400',   bw:1, mix:[.33,.54,.13], con:1.22, sc:.45, blk:.03, fade:.015, grain:.085, gs:1.2, vig:.20},
+  {id:'hp5',    name:'HP5+ 400',    bw:1, mix:[.30,.57,.13], con:1.08, sc:.25, blk:.00, fade:.035, grain:.075, gs:1.25, vig:.15},
+  {id:'street', name:'STREETPAN',   bw:1, mix:[.46,.44,.10], con:1.28, sc:.50, blk:.04, fade:.01,  grain:.08,  gs:1.1, vig:.22},
+  {id:'p30',    name:'P30 ALPHA',   bw:1, mix:[.38,.50,.12], con:1.30, sc:.60, blk:.05, fade:0,    grain:.03,  gs:.8,  vig:.15},
+  {id:'hp5p',   name:'HP5 @1600',   bw:1, mix:[.30,.57,.13], con:1.45, sc:.55, blk:.10, fade:0,    grain:.16,  gs:1.7, vig:.30},
+  {id:'nat',    name:'NATURAL',     bw:0, sat:1,   con:1,    warm:0,    fade:0,   grain:0,   vig:0},
+  {id:'film',   name:'COLOR FILM',  bw:0, sat:.9,  con:1.05, warm:.5,   fade:.05, grain:.05, vig:.15},
+  {id:'chrome', name:'CHROME',      bw:0, sat:.7,  con:1.25, warm:-.15, fade:.03, grain:.04, vig:.20},
+  {id:'night',  name:'NIGHT',       bw:0, sat:.85, con:1.2,  warm:-.45, fade:.02, grain:.08, vig:.30},
 ];
 const ASPECTS = {'3:2':3/2,'4:3':4/3,'1:1':1,'16:9':16/9,'XPAN':65/24,'FULL':null};
 const ZOOMS = [1,1.5,2,3];
@@ -225,7 +229,7 @@ function render(){
   const L = look();
   let f = `brightness(${Math.pow(2, S.ev).toFixed(3)})`;
   f += L.bw ? ' grayscale(1)' : ` saturate(${L.sat})`;
-  f += ` contrast(${L.con})`;
+  f += ` contrast(${(L.con * (1 + (L.sc||0) * .35) * (1 + (L.blk||0) * 1.5)).toFixed(3)})`;
   video.style.filter = f;
   const z = digitalZoom();
   video.style.transform = `scale(${facingFront ? -z : z}, ${z})`;
@@ -236,6 +240,7 @@ function render(){
   $('fade').style.background = `rgb(${fv},${fv},${fv})`;
   $('vig').style.background = `radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,${L.vig}) 100%)`;
   $('grainov').style.opacity = S.grain ? Math.min(1, L.grain * 3.2) : 0;
+  $('grainov').style.backgroundSize = `${Math.round(160 * (L.gs || 1))}px`;
   $('grid').style.display = S.grid ? '' : 'none';
   $('bGrid').classList.toggle('on', S.grid);
   $('bGrain').classList.toggle('on', S.grain);
@@ -262,18 +267,19 @@ let prog, tex, U = {};
   if (!gl) return;
   const vs = `attribute vec2 p;varying vec2 v;void main(){v=(p+1.)*.5;gl_Position=vec4(p,0.,1.);}`;
   const fs = `precision highp float;varying vec2 v;uniform sampler2D t;uniform vec4 crop;
-  uniform float ev,bw,sat,con,warm,fade,grain,vig,mir;uniform vec3 mx;uniform vec2 res;
+  uniform float ev,bw,sat,con,warm,fade,grain,vig,mir,sc,blk,gs;uniform vec3 mx;uniform vec2 res;
   float h(vec2 p){return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);}
   void main(){
     vec2 uv=vec2(v.x,1.-v.y); if(mir>.5) uv.x=1.-uv.x;
     vec3 c=texture2D(t,crop.xy+uv*crop.zw).rgb*ev;
     if(bw>.5){c=vec3(dot(c,mx));}
     else{float l=dot(c,vec3(.299,.587,.114));c=mix(vec3(l),c,sat);c.r+=warm*.05;c.g+=warm*.01;c.b-=warm*.05;}
-    c=clamp((c-.5)*con+.5,0.,1.);
+    c=clamp((c-.5)*con+.5,0.,1.);c=clamp((c-blk)/(1.-blk),0.,1.);c=mix(c,c*c*(3.-2.*c),sc);
     c=c*(1.-fade)+fade;
     c*=1.-vig*smoothstep(.25,.8,distance(v,vec2(.5)));
-    if(grain>0.){vec2 g=floor(v*res/max(1.,res.y/1400.));
-      float n=h(mod(g,997.)+vec2(3.1,7.7))+h(mod(g*1.37+11.,991.))-1.;c+=n*grain*.6;}
+    if(grain>0.){vec2 g=floor(v*res/(max(1.,res.y/1400.)*gs));
+      float n=h(mod(g,997.)+vec2(3.1,7.7))+h(mod(g*1.37+11.,991.))-1.;
+      float L=dot(c,vec3(.333));c+=n*grain*.6*(.35+2.6*L*(1.-L));}
     gl_FragColor=vec4(clamp(c,0.,1.),1.);}`;
   const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
   prog = gl.createProgram();
@@ -285,7 +291,7 @@ let prog, tex, U = {};
   tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
   for (const [k,v] of [[gl.TEXTURE_MIN_FILTER,gl.LINEAR],[gl.TEXTURE_MAG_FILTER,gl.LINEAR],[gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE],[gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-  for (const n of ['t','crop','ev','bw','sat','con','warm','fade','grain','vig','mir','mx','res']) U[n] = gl.getUniformLocation(prog, n);
+  for (const n of ['t','crop','ev','bw','sat','con','warm','fade','grain','vig','mir','mx','res','sc','blk','gs']) U[n] = gl.getUniformLocation(prog, n);
 })();
 
 // Кадр фиксируется синхронно в момент касания; обработка и JPEG — в фоне очереди
@@ -328,6 +334,9 @@ function renderShot(img, p){
   gl.uniform1f(U.fade, L.fade || 0);
   gl.uniform1f(U.grain, p.grain ? L.grain : 0);
   gl.uniform1f(U.vig, L.vig || 0);
+  gl.uniform1f(U.sc, L.sc || 0);
+  gl.uniform1f(U.blk, L.blk || 0);
+  gl.uniform1f(U.gs, L.gs || 1);
   gl.uniform1f(U.mir, p.mir ? 1 : 0);
   gl.uniform3fv(U.mx, L.mix || [.299,.587,.114]);
   gl.uniform2f(U.res, W, H);
