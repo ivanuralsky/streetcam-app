@@ -31,6 +31,13 @@ button{font:inherit;color:inherit;cursor:pointer}
 #fade{mix-blend-mode:lighten}
 #grainov{mix-blend-mode:overlay;background-size:160px 160px}
 #grid svg{width:100%;height:100%}
+#pv{width:100%;height:100%}
+#ghost{width:100%;height:100%;transition:opacity .2s}
+#vstrip{display:flex;gap:6px;justify-content:center;padding:8px 10px 0;overflow-x:auto}
+#vstrip:empty{display:none}
+#vstrip button{flex:none;width:52px;border:2px solid transparent;border-radius:6px;background:#1b1b1b center/cover;padding:0;height:52px;position:relative}
+#vstrip button.on{border-color:var(--acc)}
+#vstrip button span{position:absolute;left:0;right:0;bottom:0;font:700 9px var(--mono);background:rgba(0,0,0,.6);color:#fff}
 #flash{background:#000;opacity:0;transition:opacity .18s}
 #info{position:absolute;left:8px;bottom:6px;font:600 10px var(--mono);color:rgba(255,255,255,.75);text-shadow:0 0 3px #000;pointer-events:none;letter-spacing:.05em}
 .bottom{padding:4px 0 8px}
@@ -47,6 +54,9 @@ input[type=range]{flex:1;accent-color:var(--acc)}
 #shutter i{display:block;width:100%;height:100%;border-radius:50%;background:#fff;transition:transform .08s,background .1s}
 #shutter.press i{transform:scale(.86)}
 #shutter.burst i{background:var(--acc)}
+#shutter{position:relative}
+#shutter.exposing i{background:#ff3b30;animation:lx var(--dur,1s) linear forwards}
+@keyframes lx{from{transform:scale(.55)}to{transform:scale(1)}}
 #lens{width:54px;height:54px;border-radius:50%;background:#1b1b1b;border:0;font:700 13px var(--mono)}
 .screen{position:fixed;inset:0;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:30px;text-align:center;z-index:10}
 .screen h1{font:800 28px var(--mono);letter-spacing:.08em;margin:0}
@@ -72,10 +82,16 @@ input[type=range]{flex:1;accent-color:var(--acc)}
     <button class="chip" id="bZoom">1×</button>
     <button class="chip" id="bGrain">ЗЕРНО</button>
     <button class="chip" id="bTap">ТАП</button>
+    <button class="chip" id="bSh">AUTO</button>
+    <button class="chip" id="bLx">ND</button>
+    <button class="chip" id="bPre">PRE</button>
+    <button class="chip" id="bMx">МУЛЬТИ</button>
   </div>
   <div id="vf">
     <div id="frame">
       <video id="video" playsinline muted autoplay></video>
+      <canvas id="pv" class="ov"></canvas>
+      <canvas id="ghost" class="ov" style="opacity:0"></canvas>
       <div class="ov" id="tint"></div>
       <div class="ov" id="fade"></div>
       <div class="ov" id="vig"></div>
@@ -115,6 +131,7 @@ input[type=range]{flex:1;accent-color:var(--acc)}
     <button class="chip" id="vclose">✕</button>
   </div>
   <div id="vwrap"><img id="vimg" alt=""></div>
+  <div id="vstrip"></div>
   <div class="vbar">
     <button class="nav" id="vprev">‹</button>
     <button class="chip on" id="vsave">В ФОТО</button>
@@ -146,7 +163,7 @@ const ASPECTS = {'3:2':3/2,'4:3':4/3,'1:1':1,'16:9':16/9,'XPAN':65/24,'FULL':nul
 const ZOOMS = [1,1.5,2,3];
 
 /* ---------- Настройки ---------- */
-const DEF = {look:'trix', ev:0, grid:true, aspect:'3:2', grain:true, tap:false, lensId:null, zoom:0};
+const DEF = {look:'trix', ev:0, grid:true, aspect:'3:2', grain:true, tap:false, lensId:null, zoom:0, shutter:0, lxMode:'nd', pre:true, multi:0};
 let S = {...DEF};
 try { Object.assign(S, JSON.parse(localStorage.getItem('streetcam') || '{}')); } catch(e){}
 const saveS = () => { try { localStorage.setItem('streetcam', JSON.stringify(S)); } catch(e){} };
@@ -230,9 +247,14 @@ function render(){
   let f = `brightness(${Math.pow(2, S.ev).toFixed(3)})`;
   f += L.bw ? ' grayscale(1)' : ` saturate(${L.sat})`;
   f += ` contrast(${(L.con * (1 + (L.sc||0) * .35) * (1 + (L.blk||0) * 1.5)).toFixed(3)})`;
-  video.style.filter = f;
   const z = digitalZoom();
-  video.style.transform = `scale(${facingFront ? -z : z}, ${z})`;
+  if (pvOn){
+    video.style.filter = ''; video.style.transform = ''; video.style.opacity = '0.001';
+    for (const id of ['tint','fade','vig','grainov']) $(id).style.display = 'none';
+  } else {
+    video.style.filter = f;
+    video.style.transform = `scale(${facingFront ? -z : z}, ${z})`;
+  }
   const w = L.bw ? 0 : (L.warm || 0);
   $('tint').style.background = w > 0 ? 'rgb(255,140,0)' : 'rgb(0,90,255)';
   $('tint').style.opacity = Math.abs(w) * .35;
@@ -245,6 +267,14 @@ function render(){
   $('bGrid').classList.toggle('on', S.grid);
   $('bGrain').classList.toggle('on', S.grain);
   $('bTap').classList.toggle('on', S.tap);
+  $('bSh').textContent = SHUTTERS[S.shutter].t ? '⏱ ' + SHUTTERS[S.shutter].n : 'AUTO';
+  $('bSh').classList.toggle('on', S.shutter > 0);
+    $('bLx').textContent = S.lxMode === 'trail' ? 'ШЛЕЙФ' : 'ND';
+  $('bLx').style.display = S.shutter > 0 && !MULTIS[S.multi] ? '' : 'none';
+  $('bSh').style.opacity = MULTIS[S.multi] ? .35 : 1;
+  $('bPre').classList.toggle('on', S.pre);
+  $('bMx').classList.toggle('on', !!MULTIS[S.multi]);
+  $('bMx').textContent = !MULTIS[S.multi] ? 'МУЛЬТИ' : (multi ? `×${multi.n} · ${multi.k}/${multi.n}` : `МУЛЬТИ ×${MULTIS[S.multi]}`);
   $('bAsp').textContent = S.aspect;
   $('bZoom').textContent = (ZOOMS[S.zoom] || 1) + '×';
   $('evv').textContent = (S.ev > 0 ? '+' : S.ev < 0 ? '' : '±') + S.ev.toFixed(1);
@@ -259,45 +289,115 @@ function render(){
   layout();
 }
 
-/* ---------- Съёмка (WebGL в полном разрешении) ---------- */
-const glc = document.createElement('canvas');
-const gl = glc.getContext('webgl', {preserveDrawingBuffer:true, antialias:false, premultipliedAlpha:false});
-let prog, tex, U = {};
-(function initGL(){
-  if (!gl) return;
-  const vs = `attribute vec2 p;varying vec2 v;void main(){v=(p+1.)*.5;gl_Position=vec4(p,0.,1.);}`;
-  const fs = `precision highp float;varying vec2 v;uniform sampler2D t;uniform vec4 crop;
-  uniform float ev,bw,sat,con,warm,fade,grain,vig,mir,sc,blk,gs;uniform vec3 mx;uniform vec2 res;
+/* ---------- WebGL: один шейдер для превью и для снимка ---------- */
+const VS = `attribute vec2 p;varying vec2 v;void main(){v=(p+1.)*.5;gl_Position=vec4(p,0.,1.);}`;
+const FS = `precision highp float;varying vec2 v;uniform sampler2D t;uniform vec4 crop;
+  uniform float ev,bw,sat,con,warm,fade,grain,vig,mir,sc,blk,gs,fl,raw,al,seed;uniform vec3 mx;uniform vec2 res;
   float h(vec2 p){return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);}
   void main(){
-    vec2 uv=vec2(v.x,1.-v.y); if(mir>.5) uv.x=1.-uv.x;
-    vec3 c=texture2D(t,crop.xy+uv*crop.zw).rgb*ev;
+    vec2 uv=vec2(v.x,fl>.5?1.-v.y:v.y); if(mir>.5) uv.x=1.-uv.x;
+    vec3 c=texture2D(t,crop.xy+uv*crop.zw).rgb;
+    if(raw>.5){gl_FragColor=vec4(c,al);return;}
+    c*=ev;
     if(bw>.5){c=vec3(dot(c,mx));}
     else{float l=dot(c,vec3(.299,.587,.114));c=mix(vec3(l),c,sat);c.r+=warm*.05;c.g+=warm*.01;c.b-=warm*.05;}
     c=clamp((c-.5)*con+.5,0.,1.);c=clamp((c-blk)/(1.-blk),0.,1.);c=mix(c,c*c*(3.-2.*c),sc);
     c=c*(1.-fade)+fade;
     c*=1.-vig*smoothstep(.25,.8,distance(v,vec2(.5)));
     if(grain>0.){vec2 g=floor(v*res/(max(1.,res.y/1400.)*gs));
-      float n=h(mod(g,997.)+vec2(3.1,7.7))+h(mod(g*1.37+11.,991.))-1.;
+      float n=h(mod(g,997.)+vec2(3.1,7.7)+seed)+h(mod(g*1.37+11.,991.)+seed*.7)-1.;
       float L=dot(c,vec3(.333));c+=n*grain*.6*(.35+2.6*L*(1.-L));}
     gl_FragColor=vec4(clamp(c,0.,1.),1.);}`;
-  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
-  prog = gl.createProgram();
-  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
-  gl.linkProgram(prog); gl.useProgram(prog);
-  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
-  const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
-  for (const [k,v] of [[gl.TEXTURE_MIN_FILTER,gl.LINEAR],[gl.TEXTURE_MAG_FILTER,gl.LINEAR],[gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE],[gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-  for (const n of ['t','crop','ev','bw','sat','con','warm','fade','grain','vig','mir','mx','res','sc','blk','gs']) U[n] = gl.getUniformLocation(prog, n);
-})();
+const UNIFORMS = ['t','crop','ev','bw','sat','con','warm','fade','grain','vig','mir','mx','res','sc','blk','gs','fl','raw','al','seed'];
+function buildGL(g){
+  if (!g) return null;
+  const sh = (type, src) => { const s = g.createShader(type); g.shaderSource(s, src); g.compileShader(s); return s; };
+  const prog = g.createProgram();
+  g.attachShader(prog, sh(g.VERTEX_SHADER, VS)); g.attachShader(prog, sh(g.FRAGMENT_SHADER, FS));
+  g.linkProgram(prog);
+  if (!g.getProgramParameter(prog, g.LINK_STATUS)) return null;
+  g.useProgram(prog);
+  const buf = g.createBuffer(); g.bindBuffer(g.ARRAY_BUFFER, buf);
+  g.bufferData(g.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), g.STATIC_DRAW);
+  const loc = g.getAttribLocation(prog, 'p'); g.enableVertexAttribArray(loc); g.vertexAttribPointer(loc, 2, g.FLOAT, false, 0, 0);
+  const tex = g.createTexture(); g.bindTexture(g.TEXTURE_2D, tex);
+  for (const [k,v] of [[g.TEXTURE_MIN_FILTER,g.LINEAR],[g.TEXTURE_MAG_FILTER,g.LINEAR],[g.TEXTURE_WRAP_S,g.CLAMP_TO_EDGE],[g.TEXTURE_WRAP_T,g.CLAMP_TO_EDGE]]) g.texParameteri(g.TEXTURE_2D, k, v);
+  g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, false);
+  const U = {}; for (const n of UNIFORMS) U[n] = g.getUniformLocation(prog, n);
+  return {g, U, tex};
+}
+function setLook(C, p, W, H){
+  const {g, U} = C, L = p.L;
+  g.uniform1i(U.t, 0);
+  g.uniform1f(U.raw, 0); g.uniform1f(U.al, 1); g.uniform1f(U.seed, p.seed || 0);
+  g.uniform1f(U.ev, Math.pow(2, p.ev));
+  g.uniform1f(U.bw, L.bw ? 1 : 0);
+  g.uniform1f(U.sat, L.sat ?? 1);
+  g.uniform1f(U.con, L.con);
+  g.uniform1f(U.warm, L.warm || 0);
+  g.uniform1f(U.fade, L.fade || 0);
+  g.uniform1f(U.grain, p.grain ? L.grain : 0);
+  g.uniform1f(U.vig, L.vig || 0);
+  g.uniform1f(U.sc, L.sc || 0);
+  g.uniform1f(U.blk, L.blk || 0);
+  g.uniform1f(U.gs, L.gs || 1);
+  g.uniform3fv(U.mx, L.mix || [.299,.587,.114]);
+  g.uniform2f(U.res, W, H);
+}
 
-// Кадр фиксируется синхронно в момент касания; обработка и JPEG — в фоне очереди
+// Контекст для снимков в полном разрешении
+const glc = document.createElement('canvas');
+const C = buildGL(glc.getContext('webgl', {preserveDrawingBuffer:true, antialias:false, premultipliedAlpha:false}));
+const gl = C && C.g;
+
+/* ---------- Точное превью: видоискатель рисуется тем же шейдером ---------- */
+const pvc = $('pv');
+const PV = buildGL(pvc.getContext('webgl', {antialias:false, alpha:false}));
+let pvOn = !!PV;
+function drawPreview(){
+  if (!pvOn || !video.videoWidth) return;
+  const {g, U, tex} = PV, r = $('frame').getBoundingClientRect();
+  const d = Math.min(2, window.devicePixelRatio || 1);
+  const W = Math.max(2, Math.round(r.width * d)), H = Math.max(2, Math.round(r.height * d));
+  if (pvc.width !== W || pvc.height !== H){ pvc.width = W; pvc.height = H; }
+  g.viewport(0, 0, W, H);
+  g.bindTexture(g.TEXTURE_2D, tex);
+  try { g.texImage2D(g.TEXTURE_2D, 0, g.RGB, g.RGB, g.UNSIGNED_BYTE, video); } catch(e){ return; }
+  setLook(PV, {L:look(), ev:S.ev, grain:S.grain, seed:Math.random() * 50}, W, H);
+  const cr = cropRect();
+  g.uniform4f(U.crop, cr[0], cr[1], cr[2], cr[3]); g.uniform1f(U.fl, 1); g.uniform1f(U.mir, facingFront ? 1 : 0);
+  g.drawArrays(g.TRIANGLES, 0, 6);
+}
+
+/* ---------- Предзахват: кольцевой буфер последних ~0.4 с ---------- */
+const PRE_N = 5, PRE_STEP = 80;          // 5 кадров каждые ~80 мс
+let ring = [], lastRing = 0, ringBusy = false;
+function feedRing(){
+  if (!S.pre || !useBitmap || exposing || multi || document.hidden) return;
+  const now = performance.now();
+  if (now - lastRing < PRE_STEP || ringBusy) return;
+  lastRing = now; ringBusy = true;
+  createImageBitmap(video).then(bm => {
+    ringBusy = false;
+    if (!S.pre){ bm.close(); return; }
+    ring.push({bm, t:now});
+    while (ring.length > PRE_N){ const o = ring.shift(); o.bm.close(); }
+  }).catch(() => { ringBusy = false; });
+}
+function clearRing(){ ring.forEach(o => o.bm.close()); ring = []; }
+
+// Единый цикл по кадрам видео
+let lastLoop = 0;
+function frameLoop(){
+  lastLoop = performance.now();
+  drawPreview(); feedRing();
+  if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(frameLoop); else requestAnimationFrame(frameLoop);
+}
+
+/* ---------- Обычный снимок: кадр фиксируется в момент касания, обработка — в фоне ---------- */
 let useBitmap = false, queue = [], working = false;
 const MAXQ = 8;
-function params(){ return {L:look(), ev:S.ev, grain:S.grain, cr:cropRect(), mir:facingFront, vw:video.videoWidth, vh:video.videoHeight}; }
+function params(){ return {L:look(), ev:S.ev, grain:S.grain, cr:cropRect(), mir:facingFront, vw:video.videoWidth, vh:video.videoHeight, seed:0}; }
 function grabFrame(){
   if (useBitmap) return createImageBitmap(video);           // снимок кадра на момент вызова
   const c = document.createElement('canvas'); c.width = video.videoWidth; c.height = video.videoHeight;
@@ -307,55 +407,150 @@ function blink(){
   const fl = $('flash'); fl.style.transition = 'none'; fl.style.opacity = .7;
   requestAnimationFrame(() => requestAnimationFrame(() => { fl.style.transition = ''; fl.style.opacity = 0; }));
 }
-function shoot(){
-  if (!video.videoWidth) return false;
+function shoot(fromBurst){
+  if (!video.videoWidth || exposing) return false;
+  if (MULTIS[S.multi] && gl){ multiShot(); return true; }
+  if (S.shutter > 0 && gl){ blink(); longExposure(); return true; }
   if (queue.length >= MAXQ){ toast('Сохраняю… секунду'); return false; }
   let src; try { src = grabFrame(); } catch(e){ return false; }
-  queue.push({src, p:params()});
+  const tp = performance.now();
+  let pre = null;
+  if (S.pre && !fromBurst && ring.length && queue.length < 2){ pre = ring.map(o => ({bm:o.bm, dt:Math.round(o.t - tp)})); ring = []; }
+  queue.push({src, p:params(), pre});
   blink(); updThumb();
   if (!working) processQueue();
   return true;
 }
 function renderShot(img, p){
-  const {L, cr, vw, vh} = p;
+  const {cr, vw, vh} = p;
   const W = Math.round(vw * cr[2]), H = Math.round(vh * cr[3]);
   glc.width = W; glc.height = H;
   if (!gl){ glc.getContext('2d').drawImage(img, vw*cr[0], vh*cr[1], W, H, 0, 0, W, H); return; }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.disable(gl.BLEND);
   gl.viewport(0, 0, W, H);
-  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.bindTexture(gl.TEXTURE_2D, C.tex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
-  gl.uniform1i(U.t, 0);
-  gl.uniform4f(U.crop, cr[0], cr[1], cr[2], cr[3]);
-  gl.uniform1f(U.ev, Math.pow(2, p.ev));
-  gl.uniform1f(U.bw, L.bw ? 1 : 0);
-  gl.uniform1f(U.sat, L.sat ?? 1);
-  gl.uniform1f(U.con, L.con);
-  gl.uniform1f(U.warm, L.warm || 0);
-  gl.uniform1f(U.fade, L.fade || 0);
-  gl.uniform1f(U.grain, p.grain ? L.grain : 0);
-  gl.uniform1f(U.vig, L.vig || 0);
-  gl.uniform1f(U.sc, L.sc || 0);
-  gl.uniform1f(U.blk, L.blk || 0);
-  gl.uniform1f(U.gs, L.gs || 1);
-  gl.uniform1f(U.mir, p.mir ? 1 : 0);
-  gl.uniform3fv(U.mx, L.mix || [.299,.587,.114]);
-  gl.uniform2f(U.res, W, H);
+  setLook(C, p, W, H);
+  gl.uniform4f(C.U.crop, cr[0], cr[1], cr[2], cr[3]);
+  gl.uniform1f(C.U.fl, 1);
+  gl.uniform1f(C.U.mir, p.mir ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
 }
+const toJpeg = () => new Promise(r => glc.toBlob(r, 'image/jpeg', 0.93));
+const freeImg = img => { if (img.close) img.close(); else { img.width = 0; img.height = 0; } };
 async function processQueue(){
   working = true;
   while (queue.length){
     const it = queue[0];
     try {
       const img = await it.src;
-      renderShot(img, it.p);
-      if (img.close) img.close(); else { img.width = 0; img.height = 0; }
-      const blob = await new Promise(r => glc.toBlob(r, 'image/jpeg', 0.93));
-      if (blob) await addShot(blob);
+      renderShot(img, it.p); freeImg(img);
+      const blob = await toJpeg();
+      const frames = [];
+      if (it.pre){
+        for (const f of it.pre){ renderShot(f.bm, it.p); f.bm.close(); const b = await toJpeg(); if (b) frames.push({blob:b, dt:f.dt}); }
+      }
+      if (blob){ if (frames.length) frames.push({blob, dt:0}); await addShot(blob, frames.length ? frames : null); }
     } catch(e){ toast('Ошибка съёмки'); console.error(e); }
     queue.shift(); updThumb();
   }
   working = false;
+}
+
+/* ---------- Накопление кадров: длинная выдержка и мультиэкспозиция ---------- */
+const SHUTTERS = [{n:'AUTO',t:0},{n:'1/15',t:1/15},{n:'1/8',t:1/8},{n:'1/4',t:1/4},{n:'1/2',t:1/2},{n:'1"',t:1},{n:'2"',t:2}];
+const MULTIS = [0, 2, 3];
+let exposing = false, multi = null;
+function makeAccum(W, H){
+  // По возможности — 16-битный буфер (без полос при усреднении), иначе 8-битный
+  const hf = gl.getExtension('OES_texture_half_float'), cb = gl.getExtension('EXT_color_buffer_half_float');
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  for (const [k,v] of [[gl.TEXTURE_MIN_FILTER,gl.NEAREST],[gl.TEXTURE_MAG_FILTER,gl.NEAREST],[gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE],[gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+  const fb = gl.createFramebuffer();
+  const tryType = type => {
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, type, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    return gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  };
+  if (!(hf && cb && tryType(hf.HALF_FLOAT_OES))) tryType(gl.UNSIGNED_BYTE);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return {t, fb, W, H};
+}
+function accumDraw(acc, p, a){
+  // текущий кадр видео → буфер с весом a (скользящее среднее)
+  gl.bindTexture(gl.TEXTURE_2D, C.tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, acc.fb); gl.viewport(0, 0, acc.W, acc.H);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  const {U} = C, cr = p.cr;
+  gl.uniform1i(U.t, 0); gl.uniform1f(U.raw, 1); gl.uniform1f(U.al, a); gl.uniform1f(U.fl, 1);
+  gl.uniform1f(U.mir, p.mir ? 1 : 0); gl.uniform4f(U.crop, cr[0], cr[1], cr[2], cr[3]);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+  gl.disable(gl.BLEND); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+async function finishAccum(acc, p){
+  glc.width = acc.W; glc.height = acc.H;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.disable(gl.BLEND); gl.viewport(0, 0, acc.W, acc.H);
+  gl.bindTexture(gl.TEXTURE_2D, acc.t);
+  setLook(C, p, acc.W, acc.H);
+  gl.uniform4f(C.U.crop, 0, 0, 1, 1); gl.uniform1f(C.U.fl, 0); gl.uniform1f(C.U.mir, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+  const blob = await toJpeg();
+  gl.deleteFramebuffer(acc.fb); gl.deleteTexture(acc.t);
+  if (blob) await addShot(blob);
+}
+const accSize = p => [Math.round(p.vw * p.cr[2]), Math.round(p.vh * p.cr[3])];
+const nextFrame = () => new Promise(r => video.requestVideoFrameCallback ? video.requestVideoFrameCallback(() => r()) : requestAnimationFrame(() => r()));
+
+async function longExposure(){
+  const dur = SHUTTERS[S.shutter].t, trail = S.lxMode === 'trail', name = SHUTTERS[S.shutter].n;
+  while (working) await new Promise(r => setTimeout(r, 30));      // дождаться обычных кадров в очереди
+  exposing = true; sh.classList.add('exposing'); sh.style.setProperty('--dur', dur + 's');
+  const p = params(), acc = makeAccum(...accSize(p));
+  let k = 0;
+  try {
+    const t0 = performance.now();
+    accumDraw(acc, p, 1); k = 1;                                   // первый кадр — в момент нажатия
+    while (performance.now() - t0 < dur * 1000){ await nextFrame(); k++; accumDraw(acc, p, 1 / k); }
+    if (trail) accumDraw(acc, p, 0.45);                            // «шлейф»: чёткий финальный момент поверх движения
+    await finishAccum(acc, p);
+    toast(`${name} · ${k} кадров`);
+  } catch(e){ toast('Ошибка выдержки'); console.error(e); }
+  exposing = false; sh.classList.remove('exposing'); updThumb();
+}
+
+// Мультиэкспозиция: каждое нажатие добавляет кадр; призрак прошлых кадров — в видоискателе
+const ghost = $('ghost');
+function multiShot(){
+  if (!multi){
+    clearRing();
+    const p = params();
+    multi = {n:MULTIS[S.multi], k:0, p, acc:makeAccum(...accSize(p))};
+    const r = $('frame').getBoundingClientRect();
+    ghost.width = Math.round(r.width); ghost.height = Math.round(r.height);
+    ghost.getContext('2d').clearRect(0, 0, ghost.width, ghost.height);
+  }
+  const m = multi;
+  m.k++; accumDraw(m.acc, m.p, 1 / m.k); blink();
+  // призрак: уменьшенная копия кадра поверх видоискателя
+  const x = ghost.getContext('2d'), cr = m.p.cr, vw = m.p.vw, vh = m.p.vh;
+  x.globalAlpha = 1 / m.k;
+  x.drawImage(video, vw*cr[0], vh*cr[1], vw*cr[2], vh*cr[3], 0, 0, ghost.width, ghost.height);
+  ghost.style.opacity = .45; ghost.style.filter = m.p.L.bw ? 'grayscale(1)' : '';
+  if (m.k >= m.n){
+    multi = null; ghost.style.opacity = 0;
+    exposing = true;
+    finishAccum(m.acc, m.p).catch(e => { toast('Ошибка'); console.error(e); }).finally(() => { exposing = false; updThumb(); });
+    toast(`Мультиэкспозиция ×${m.n} готова`);
+  } else toast(`Экспозиция ${m.k} из ${m.n}`);
+  render();
+}
+function cancelMulti(){
+  if (!multi) return;
+  gl.deleteFramebuffer(multi.acc.fb); gl.deleteTexture(multi.acc.t);
+  multi = null; ghost.style.opacity = 0; render();
 }
 
 /* ---------- Хранилище снимков (IndexedDB) ---------- */
@@ -374,15 +569,20 @@ const tx = mode => db.transaction('shots', mode).objectStore('shots');
 async function loadShots(){
   if (!db) return;
   const all = await new Promise(res => { const r = tx('readonly').getAll(); r.onsuccess = () => res(r.result || []); r.onerror = () => res([]); });
-  shots = all.map(s => ({id:s.id, t:s.t, blob:s.blob, url:URL.createObjectURL(s.blob)}));
+  shots = all.map(s => ({id:s.id, t:s.t, blob:s.blob, frames:s.frames || null, url:URL.createObjectURL(s.blob)}));
   updThumb();
 }
-async function addShot(blob){
+async function addShot(blob, frames){
   const s = {t: Date.now(), blob};
+  if (frames) s.frames = frames;
   if (db) s.id = await new Promise(res => { const r = tx('readwrite').add(s); r.onsuccess = () => res(r.result); r.onerror = () => res(Math.random()); });
   else s.id = Math.random();
   s.url = URL.createObjectURL(blob);
   shots.push(s); updThumb();
+}
+function putShot(s){
+  if (!db) return;
+  try { tx('readwrite').put({id:s.id, t:s.t, blob:s.blob, frames:s.frames}); } catch(e){}
 }
 function delShot(i){
   const s = shots[i]; if (!s) return;
@@ -393,6 +593,7 @@ function updThumb(){
   const last = shots[shots.length - 1];
   $('thumb').style.backgroundImage = last ? `url(${last.url})` : '';
   $('count').textContent = (shots.length + queue.length) || '';
+  if (typeof render === 'function' && multi) render();
 }
 const fileOf = s => new File([s.blob], `street_${new Date(s.t).toISOString().replace(/[:.]/g,'-').slice(0,19)}.jpg`, {type:'image/jpeg'});
 
@@ -402,9 +603,28 @@ function openViewer(){ if (!shots.length) return; vi = shots.length - 1; showV()
 function showV(){
   if (!shots.length){ $('viewer').hidden = true; return; }
   vi = Math.max(0, Math.min(vi, shots.length - 1));
-  $('vimg').src = shots[vi].url;
+  const s = shots[vi];
+  $('vimg').src = s.url;
   $('vcount').textContent = `${vi + 1} / ${shots.length}`;
+  // Предзахват: лента кадров «до нажатия», выбранный становится основным
+  stripUrls.forEach(u => URL.revokeObjectURL(u)); stripUrls = [];
+  const st = $('vstrip'); st.innerHTML = '';
+  if (s.frames && s.frames.length > 1){
+    s.frames.forEach(f => {
+      const u = URL.createObjectURL(f.blob); stripUrls.push(u);
+      const b = document.createElement('button');
+      b.style.backgroundImage = `url(${u})`;
+      b.innerHTML = `<span>${f.dt ? (f.dt / 1000).toFixed(2) + 's' : 'КЛИК'}</span>`;
+      b.classList.toggle('on', f.blob === s.blob);
+      b.onclick = () => {
+        s.blob = f.blob; URL.revokeObjectURL(s.url); s.url = URL.createObjectURL(f.blob);
+        putShot(s); updThumb(); showV();
+      };
+      st.appendChild(b);
+    });
+  }
 }
+let stripUrls = [];
 function shareFiles(files){
   // Вызывается прямо в обработчике нажатия — иначе iOS не откроет меню «Поделиться»
   if (navigator.canShare && navigator.canShare({files})){
@@ -419,7 +639,7 @@ $('vall').onclick = () => shareFiles(shots.map(fileOf)).then(ok => ok && toast('
 $('vdel').onclick = () => { delShot(vi); showV(); };
 $('vprev').onclick = () => { vi--; showV(); };
 $('vnext').onclick = () => { vi++; showV(); };
-$('vclose').onclick = () => $('viewer').hidden = true;
+$('vclose').onclick = () => { $('viewer').hidden = true; stripUrls.forEach(u => URL.revokeObjectURL(u)); stripUrls = []; $('vstrip').innerHTML = ''; };
 $('thumb').onclick = openViewer;
 let sx = null;
 $('vwrap').addEventListener('touchstart', e => sx = e.touches[0].clientX, {passive:true});
@@ -434,6 +654,16 @@ LOOKS.forEach(L => {
 $('ev').oninput = e => { S.ev = +e.target.value; saveS(); render(); };
 $('ev').ondblclick = () => { S.ev = 0; saveS(); render(); };
 $('bGrid').onclick = () => { S.grid = !S.grid; saveS(); render(); };
+$('bSh').onclick = () => { S.shutter = (S.shutter + 1) % SHUTTERS.length; saveS(); render(); };
+$('bLx').onclick = () => { S.lxMode = S.lxMode === 'trail' ? 'nd' : 'trail'; saveS(); render();
+  toast(S.lxMode === 'trail' ? 'Шлейф: чёткий момент + размытое движение' : 'ND: всё движение размыто'); };
+$('bPre').onclick = () => { S.pre = !S.pre; saveS(); if (!S.pre) clearRing(); render();
+  toast(S.pre ? 'Предзахват: сохраняются и 0.4 с до нажатия' : 'Предзахват выключен'); };
+$('bMx').onclick = () => {
+  if (multi){ cancelMulti(); toast('Мультиэкспозиция отменена'); return; }
+  S.multi = (S.multi + 1) % MULTIS.length; saveS(); render();
+  if (MULTIS[S.multi]) toast(`Мультиэкспозиция: ${MULTIS[S.multi]} нажатия → 1 кадр`);
+};
 $('bGrain').onclick = () => { S.grain = !S.grain; saveS(); render(); };
 $('bTap').onclick = () => { S.tap = !S.tap; saveS(); render(); toast(S.tap ? 'Съёмка касанием кадра' : 'Касание кадра выключено'); };
 $('bAsp').onclick = () => { const k = Object.keys(ASPECTS); S.aspect = k[(k.indexOf(S.aspect) + 1) % k.length]; saveS(); render(); };
@@ -453,7 +683,7 @@ const sh = $('shutter');
 sh.addEventListener('pointerdown', e => {
   e.preventDefault(); sh.classList.add('press');
   shoot();
-  holdT = setTimeout(() => { sh.classList.add('burst'); burstT = setInterval(shoot, 160); }, 350);
+  holdT = setTimeout(() => { if (S.shutter > 0 || MULTIS[S.multi]) return; sh.classList.add('burst'); burstT = setInterval(() => shoot(true), 160); }, 350);
 });
 const release = () => { sh.classList.remove('press','burst'); clearTimeout(holdT); clearInterval(burstT); holdT = burstT = null; };
 sh.addEventListener('pointerup', release);
@@ -469,7 +699,7 @@ video.addEventListener('resize', render);
 window.addEventListener('resize', layout);
 window.addEventListener('orientationchange', () => setTimeout(render, 300));
 document.addEventListener('visibilitychange', async () => {
-  if (document.hidden){ if (stream) stream.getTracks().forEach(t => t.stop()); }
+  if (document.hidden){ clearRing(); if (stream) stream.getTracks().forEach(t => t.stop()); }
   else if ($('start').hidden) { try { await startCamera(S.lensId); render(); } catch(e){} }
 });
 
@@ -487,12 +717,16 @@ async function go(){
     try { const b = await createImageBitmap(video); b.close && b.close(); useBitmap = true; } catch(e){ useBitmap = false; }
     $('start').hidden = true;
     render();
+    if (!loopStarted){ loopStarted = true; frameLoop(); }
   } catch(e){
     $('startMsg').textContent = e && e.name === 'NotAllowedError'
       ? 'Доступ к камере запрещён. Настройки → Safari → Камера → «Разрешить», затем обновите страницу.'
       : 'Не удалось включить камеру: ' + (e && e.message || e);
   }
 }
+let loopStarted = false;
+// Страховка: если цикл кадров остановился (смена объектива и т.п.) — перезапустить
+setInterval(() => { if (loopStarted && !document.hidden && performance.now() - lastLoop > 700) frameLoop(); }, 500);
 $('go').onclick = go;
 if (!window.isSecureContext || !navigator.mediaDevices){
   $('startMsg').textContent = 'Камера работает только по адресу https://. Откройте приложение с сайта, а не из файла.';
