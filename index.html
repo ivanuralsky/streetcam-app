@@ -29,15 +29,9 @@ button{font:inherit;color:inherit;cursor:pointer}
 .ov{position:absolute;inset:0;pointer-events:none}
 #tint{mix-blend-mode:soft-light}
 #fade{mix-blend-mode:lighten}
-#grainov{mix-blend-mode:overlay;background-size:160px 160px}
 #grid svg{width:100%;height:100%}
 #pv{width:100%;height:100%}
 #ghost{width:100%;height:100%;transition:opacity .2s}
-#vstrip{display:flex;gap:6px;justify-content:center;padding:8px 10px 0;overflow-x:auto}
-#vstrip:empty{display:none}
-#vstrip button{flex:none;width:52px;border:2px solid transparent;border-radius:6px;background:#1b1b1b center/cover;padding:0;height:52px;position:relative}
-#vstrip button.on{border-color:var(--acc)}
-#vstrip button span{position:absolute;left:0;right:0;bottom:0;font:700 9px var(--mono);background:rgba(0,0,0,.6);color:#fff}
 #flash{background:#000;opacity:0;transition:opacity .18s}
 #info{position:absolute;left:8px;bottom:6px;font:600 10px var(--mono);color:rgba(255,255,255,.75);text-shadow:0 0 3px #000;pointer-events:none;letter-spacing:.05em}
 .bottom{padding:4px 0 8px}
@@ -68,7 +62,9 @@ input[type=range]{flex:1;accent-color:var(--acc)}
 .vtop,.vbar{display:flex;gap:8px;align-items:center;padding:10px}
 .vbar{justify-content:center;padding-bottom:16px}
 #vwrap{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}
-#vimg{max-width:100%;max-height:100%;object-fit:contain}
+#vimg{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center center}
+#vwrap{overflow:hidden;touch-action:none}
+#vclose{width:56px;height:56px;border-radius:50%;border:0;background:#2a2a2a;color:#fff;font-size:26px;line-height:56px;padding:0}
 .nav{background:#1b1b1b;border:0;border-radius:50%;width:44px;height:44px;font-size:22px}
 #toast{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 56px);transform:translateX(-50%);background:rgba(30,30,30,.92);
   padding:8px 14px;border-radius:14px;font:600 12px var(--mono);z-index:30;opacity:0;transition:opacity .2s;pointer-events:none}
@@ -80,11 +76,9 @@ input[type=range]{flex:1;accent-color:var(--acc)}
     <button class="chip" id="bGrid">СЕТКА</button>
     <button class="chip" id="bAsp">3:2</button>
     <button class="chip" id="bZoom">1×</button>
-    <button class="chip" id="bGrain">ЗЕРНО</button>
     <button class="chip" id="bTap">ТАП</button>
     <button class="chip" id="bSh">AUTO</button>
     <button class="chip" id="bLx">ND</button>
-    <button class="chip" id="bPre">PRE</button>
     <button class="chip" id="bMx">МУЛЬТИ</button>
   </div>
   <div id="vf">
@@ -95,7 +89,6 @@ input[type=range]{flex:1;accent-color:var(--acc)}
       <div class="ov" id="tint"></div>
       <div class="ov" id="fade"></div>
       <div class="ov" id="vig"></div>
-      <div class="ov" id="grainov"></div>
       <div class="ov" id="grid"><svg viewBox="0 0 300 300" preserveAspectRatio="none">
         <g stroke="rgba(255,255,255,.35)" stroke-width="1" vector-effect="non-scaling-stroke">
         <line x1="100" y1="0" x2="100" y2="300" vector-effect="non-scaling-stroke"/>
@@ -128,10 +121,9 @@ input[type=range]{flex:1;accent-color:var(--acc)}
   <div class="vtop">
     <span id="vcount" style="font:600 12px var(--mono);color:#999"></span><span class="sp"></span>
     <button class="chip" id="vall">СОХРАНИТЬ ВСЕ</button>
-    <button class="chip" id="vclose">✕</button>
+    <button id="vclose" aria-label="Закрыть">✕</button>
   </div>
   <div id="vwrap"><img id="vimg" alt=""></div>
-  <div id="vstrip"></div>
   <div class="vbar">
     <button class="nav" id="vprev">‹</button>
     <button class="chip on" id="vsave">В ФОТО</button>
@@ -147,23 +139,23 @@ const $ = id => document.getElementById(id);
 
 /* ---------- Плёнки / образы ---------- */
 // Плёнки: mix — спектральная чувствительность (R,G,B), con — контраст, sc — S-кривая,
-// blk — провал теней, fade — подъём чёрного, grain — сила зерна, gs — размер зерна, vig — виньетка
+// blk — провал теней, fade — подъём чёрного, vig — виньетка
 const LOOKS = [
-  {id:'trix',   name:'TRI-X 400',   bw:1, mix:[.33,.54,.13], con:1.22, sc:.45, blk:.03, fade:.015, grain:.085, gs:1.2, vig:.20},
-  {id:'hp5',    name:'HP5+ 400',    bw:1, mix:[.30,.57,.13], con:1.08, sc:.25, blk:.00, fade:.035, grain:.075, gs:1.25, vig:.15},
-  {id:'street', name:'STREETPAN',   bw:1, mix:[.46,.44,.10], con:1.28, sc:.50, blk:.04, fade:.01,  grain:.08,  gs:1.1, vig:.22},
-  {id:'p30',    name:'P30 ALPHA',   bw:1, mix:[.38,.50,.12], con:1.30, sc:.60, blk:.05, fade:0,    grain:.03,  gs:.8,  vig:.15},
-  {id:'hp5p',   name:'HP5 @1600',   bw:1, mix:[.30,.57,.13], con:1.45, sc:.55, blk:.10, fade:0,    grain:.16,  gs:1.7, vig:.30},
-  {id:'nat',    name:'NATURAL',     bw:0, sat:1,   con:1,    warm:0,    fade:0,   grain:0,   vig:0},
-  {id:'film',   name:'COLOR FILM',  bw:0, sat:.9,  con:1.05, warm:.5,   fade:.05, grain:.05, vig:.15},
-  {id:'chrome', name:'CHROME',      bw:0, sat:.7,  con:1.25, warm:-.15, fade:.03, grain:.04, vig:.20},
-  {id:'night',  name:'NIGHT',       bw:0, sat:.85, con:1.2,  warm:-.45, fade:.02, grain:.08, vig:.30},
+  {id:'trix',   name:'TRI-X 400',   bw:1, mix:[.33,.54,.13], con:1.22, sc:.45, blk:.03, fade:.015, vig:.20},
+  {id:'hp5',    name:'HP5+ 400',    bw:1, mix:[.30,.57,.13], con:1.08, sc:.25, blk:.00, fade:.035, vig:.15},
+  {id:'street', name:'STREETPAN',   bw:1, mix:[.46,.44,.10], con:1.28, sc:.50, blk:.04, fade:.01,  vig:.22},
+  {id:'p30',    name:'P30 ALPHA',   bw:1, mix:[.38,.50,.12], con:1.30, sc:.60, blk:.05, fade:0,    vig:.15},
+  {id:'hp5p',   name:'HP5 @1600',   bw:1, mix:[.30,.57,.13], con:1.45, sc:.55, blk:.10, fade:0,    vig:.30},
+  {id:'nat',    name:'NATURAL',     bw:0, sat:1,   con:1,    warm:0,    fade:0,   vig:0},
+  {id:'film',   name:'COLOR FILM',  bw:0, sat:.9,  con:1.05, warm:.5,   fade:.05, vig:.15},
+  {id:'chrome', name:'CHROME',      bw:0, sat:.7,  con:1.25, warm:-.15, fade:.03, vig:.20},
+  {id:'night',  name:'NIGHT',       bw:0, sat:.85, con:1.2,  warm:-.45, fade:.02, vig:.30},
 ];
 const ASPECTS = {'3:2':3/2,'4:3':4/3,'1:1':1,'16:9':16/9,'XPAN':65/24,'FULL':null};
 const ZOOMS = [1,1.5,2,3];
 
 /* ---------- Настройки ---------- */
-const DEF = {look:'trix', ev:0, grid:true, aspect:'3:2', grain:true, tap:false, lensId:null, zoom:0, shutter:0, lxMode:'nd', pre:true, multi:0};
+const DEF = {look:'trix', ev:0, grid:true, aspect:'3:2', tap:false, lensId:null, zoom:0, shutter:0, lxMode:'nd', multi:0};
 let S = {...DEF};
 try { Object.assign(S, JSON.parse(localStorage.getItem('streetcam') || '{}')); } catch(e){}
 const saveS = () => { try { localStorage.setItem('streetcam', JSON.stringify(S)); } catch(e){} };
@@ -234,13 +226,6 @@ function layout(){
 }
 
 /* ---------- Превью (CSS — быстро и без нагрузки) ---------- */
-function makeNoise(){
-  const c = document.createElement('canvas'); c.width = c.height = 160;
-  const x = c.getContext('2d'), d = x.createImageData(160,160);
-  for (let i = 0; i < d.data.length; i += 4){ const v = 128 + (Math.random() - .5) * 255; d.data[i]=d.data[i+1]=d.data[i+2]=v; d.data[i+3]=255; }
-  x.putImageData(d,0,0); return c.toDataURL();
-}
-$('grainov').style.backgroundImage = `url(${makeNoise()})`;
 
 function render(){
   const L = look();
@@ -250,7 +235,7 @@ function render(){
   const z = digitalZoom();
   if (pvOn){
     video.style.filter = ''; video.style.transform = ''; video.style.opacity = '0.001';
-    for (const id of ['tint','fade','vig','grainov']) $(id).style.display = 'none';
+    for (const id of ['tint','fade','vig']) $(id).style.display = 'none';
   } else {
     video.style.filter = f;
     video.style.transform = `scale(${facingFront ? -z : z}, ${z})`;
@@ -261,18 +246,14 @@ function render(){
   const fv = Math.round((L.fade || 0) * 255);
   $('fade').style.background = `rgb(${fv},${fv},${fv})`;
   $('vig').style.background = `radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,${L.vig}) 100%)`;
-  $('grainov').style.opacity = S.grain ? Math.min(1, L.grain * 3.2) : 0;
-  $('grainov').style.backgroundSize = `${Math.round(160 * (L.gs || 1))}px`;
   $('grid').style.display = S.grid ? '' : 'none';
   $('bGrid').classList.toggle('on', S.grid);
-  $('bGrain').classList.toggle('on', S.grain);
   $('bTap').classList.toggle('on', S.tap);
   $('bSh').textContent = SHUTTERS[S.shutter].t ? '⏱ ' + SHUTTERS[S.shutter].n : 'AUTO';
   $('bSh').classList.toggle('on', S.shutter > 0);
     $('bLx').textContent = S.lxMode === 'trail' ? 'ШЛЕЙФ' : 'ND';
   $('bLx').style.display = S.shutter > 0 && !MULTIS[S.multi] ? '' : 'none';
   $('bSh').style.opacity = MULTIS[S.multi] ? .35 : 1;
-  $('bPre').classList.toggle('on', S.pre);
   $('bMx').classList.toggle('on', !!MULTIS[S.multi]);
   $('bMx').textContent = !MULTIS[S.multi] ? 'МУЛЬТИ' : (multi ? `×${multi.n} · ${multi.k}/${multi.n}` : `МУЛЬТИ ×${MULTIS[S.multi]}`);
   $('bAsp').textContent = S.aspect;
@@ -292,8 +273,7 @@ function render(){
 /* ---------- WebGL: один шейдер для превью и для снимка ---------- */
 const VS = `attribute vec2 p;varying vec2 v;void main(){v=(p+1.)*.5;gl_Position=vec4(p,0.,1.);}`;
 const FS = `precision highp float;varying vec2 v;uniform sampler2D t;uniform vec4 crop;
-  uniform float ev,bw,sat,con,warm,fade,grain,vig,mir,sc,blk,gs,fl,raw,al,seed;uniform vec3 mx;uniform vec2 res;
-  float h(vec2 p){return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);}
+  uniform float ev,bw,sat,con,warm,fade,vig,mir,sc,blk,fl,raw,al;uniform vec3 mx;uniform vec2 res;
   void main(){
     vec2 uv=vec2(v.x,fl>.5?1.-v.y:v.y); if(mir>.5) uv.x=1.-uv.x;
     vec3 c=texture2D(t,crop.xy+uv*crop.zw).rgb;
@@ -304,11 +284,8 @@ const FS = `precision highp float;varying vec2 v;uniform sampler2D t;uniform vec
     c=clamp((c-.5)*con+.5,0.,1.);c=clamp((c-blk)/(1.-blk),0.,1.);c=mix(c,c*c*(3.-2.*c),sc);
     c=c*(1.-fade)+fade;
     c*=1.-vig*smoothstep(.25,.8,distance(v,vec2(.5)));
-    if(grain>0.){vec2 g=floor(v*res/(max(1.,res.y/1400.)*gs));
-      float n=h(mod(g,997.)+vec2(3.1,7.7)+seed)+h(mod(g*1.37+11.,991.)+seed*.7)-1.;
-      float L=dot(c,vec3(.333));c+=n*grain*.6*(.35+2.6*L*(1.-L));}
     gl_FragColor=vec4(clamp(c,0.,1.),1.);}`;
-const UNIFORMS = ['t','crop','ev','bw','sat','con','warm','fade','grain','vig','mir','mx','res','sc','blk','gs','fl','raw','al','seed'];
+const UNIFORMS = ['t','crop','ev','bw','sat','con','warm','fade','vig','mir','mx','res','sc','blk','fl','raw','al'];
 function buildGL(g){
   if (!g) return null;
   const sh = (type, src) => { const s = g.createShader(type); g.shaderSource(s, src); g.compileShader(s); return s; };
@@ -329,18 +306,16 @@ function buildGL(g){
 function setLook(C, p, W, H){
   const {g, U} = C, L = p.L;
   g.uniform1i(U.t, 0);
-  g.uniform1f(U.raw, 0); g.uniform1f(U.al, 1); g.uniform1f(U.seed, p.seed || 0);
+  g.uniform1f(U.raw, 0); g.uniform1f(U.al, 1);
   g.uniform1f(U.ev, Math.pow(2, p.ev));
   g.uniform1f(U.bw, L.bw ? 1 : 0);
   g.uniform1f(U.sat, L.sat ?? 1);
   g.uniform1f(U.con, L.con);
   g.uniform1f(U.warm, L.warm || 0);
   g.uniform1f(U.fade, L.fade || 0);
-  g.uniform1f(U.grain, p.grain ? L.grain : 0);
   g.uniform1f(U.vig, L.vig || 0);
   g.uniform1f(U.sc, L.sc || 0);
   g.uniform1f(U.blk, L.blk || 0);
-  g.uniform1f(U.gs, L.gs || 1);
   g.uniform3fv(U.mx, L.mix || [.299,.587,.114]);
   g.uniform2f(U.res, W, H);
 }
@@ -363,41 +338,25 @@ function drawPreview(){
   g.viewport(0, 0, W, H);
   g.bindTexture(g.TEXTURE_2D, tex);
   try { g.texImage2D(g.TEXTURE_2D, 0, g.RGB, g.RGB, g.UNSIGNED_BYTE, video); } catch(e){ return; }
-  setLook(PV, {L:look(), ev:S.ev, grain:S.grain, seed:Math.random() * 50}, W, H);
+  setLook(PV, {L:look(), ev:S.ev}, W, H);
   const cr = cropRect();
   g.uniform4f(U.crop, cr[0], cr[1], cr[2], cr[3]); g.uniform1f(U.fl, 1); g.uniform1f(U.mir, facingFront ? 1 : 0);
   g.drawArrays(g.TRIANGLES, 0, 6);
 }
 
-/* ---------- Предзахват: кольцевой буфер последних ~0.4 с ---------- */
-const PRE_N = 5, PRE_STEP = 80;          // 5 кадров каждые ~80 мс
-let ring = [], lastRing = 0, ringBusy = false;
-function feedRing(){
-  if (!S.pre || !useBitmap || exposing || multi || document.hidden) return;
-  const now = performance.now();
-  if (now - lastRing < PRE_STEP || ringBusy) return;
-  lastRing = now; ringBusy = true;
-  createImageBitmap(video).then(bm => {
-    ringBusy = false;
-    if (!S.pre){ bm.close(); return; }
-    ring.push({bm, t:now});
-    while (ring.length > PRE_N){ const o = ring.shift(); o.bm.close(); }
-  }).catch(() => { ringBusy = false; });
-}
-function clearRing(){ ring.forEach(o => o.bm.close()); ring = []; }
 
 // Единый цикл по кадрам видео
 let lastLoop = 0;
 function frameLoop(){
   lastLoop = performance.now();
-  drawPreview(); feedRing();
+  drawPreview();
   if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(frameLoop); else requestAnimationFrame(frameLoop);
 }
 
 /* ---------- Обычный снимок: кадр фиксируется в момент касания, обработка — в фоне ---------- */
 let useBitmap = false, queue = [], working = false;
 const MAXQ = 8;
-function params(){ return {L:look(), ev:S.ev, grain:S.grain, cr:cropRect(), mir:facingFront, vw:video.videoWidth, vh:video.videoHeight, seed:0}; }
+function params(){ return {L:look(), ev:S.ev, cr:cropRect(), mir:facingFront, vw:video.videoWidth, vh:video.videoHeight}; }
 function grabFrame(){
   if (useBitmap) return createImageBitmap(video);           // снимок кадра на момент вызова
   const c = document.createElement('canvas'); c.width = video.videoWidth; c.height = video.videoHeight;
@@ -413,10 +372,7 @@ function shoot(fromBurst){
   if (S.shutter > 0 && gl){ blink(); longExposure(); return true; }
   if (queue.length >= MAXQ){ toast('Сохраняю… секунду'); return false; }
   let src; try { src = grabFrame(); } catch(e){ return false; }
-  const tp = performance.now();
-  let pre = null;
-  if (S.pre && !fromBurst && ring.length && queue.length < 2){ pre = ring.map(o => ({bm:o.bm, dt:Math.round(o.t - tp)})); ring = []; }
-  queue.push({src, p:params(), pre});
+  queue.push({src, p:params()});
   blink(); updThumb();
   if (!working) processQueue();
   return true;
@@ -446,11 +402,7 @@ async function processQueue(){
       const img = await it.src;
       renderShot(img, it.p); freeImg(img);
       const blob = await toJpeg();
-      const frames = [];
-      if (it.pre){
-        for (const f of it.pre){ renderShot(f.bm, it.p); f.bm.close(); const b = await toJpeg(); if (b) frames.push({blob:b, dt:f.dt}); }
-      }
-      if (blob){ if (frames.length) frames.push({blob, dt:0}); await addShot(blob, frames.length ? frames : null); }
+      if (blob) await addShot(blob);
     } catch(e){ toast('Ошибка съёмки'); console.error(e); }
     queue.shift(); updThumb();
   }
@@ -525,7 +477,6 @@ async function longExposure(){
 const ghost = $('ghost');
 function multiShot(){
   if (!multi){
-    clearRing();
     const p = params();
     multi = {n:MULTIS[S.multi], k:0, p, acc:makeAccum(...accSize(p))};
     const r = $('frame').getBoundingClientRect();
@@ -569,20 +520,16 @@ const tx = mode => db.transaction('shots', mode).objectStore('shots');
 async function loadShots(){
   if (!db) return;
   const all = await new Promise(res => { const r = tx('readonly').getAll(); r.onsuccess = () => res(r.result || []); r.onerror = () => res([]); });
-  shots = all.map(s => ({id:s.id, t:s.t, blob:s.blob, frames:s.frames || null, url:URL.createObjectURL(s.blob)}));
+  shots = all.map(s => ({id:s.id, t:s.t, blob:s.blob, url:URL.createObjectURL(s.blob)}));
+  all.filter(s => s.frames).forEach(s => { try { tx('readwrite').put({id:s.id, t:s.t, blob:s.blob}); } catch(e){} });  // убрать старые кадры предзахвата
   updThumb();
 }
-async function addShot(blob, frames){
+async function addShot(blob){
   const s = {t: Date.now(), blob};
-  if (frames) s.frames = frames;
   if (db) s.id = await new Promise(res => { const r = tx('readwrite').add(s); r.onsuccess = () => res(r.result); r.onerror = () => res(Math.random()); });
   else s.id = Math.random();
   s.url = URL.createObjectURL(blob);
   shots.push(s); updThumb();
-}
-function putShot(s){
-  if (!db) return;
-  try { tx('readwrite').put({id:s.id, t:s.t, blob:s.blob, frames:s.frames}); } catch(e){}
 }
 function delShot(i){
   const s = shots[i]; if (!s) return;
@@ -604,27 +551,9 @@ function showV(){
   if (!shots.length){ $('viewer').hidden = true; return; }
   vi = Math.max(0, Math.min(vi, shots.length - 1));
   const s = shots[vi];
-  $('vimg').src = s.url;
+  $('vimg').src = s.url; resetZoom();
   $('vcount').textContent = `${vi + 1} / ${shots.length}`;
-  // Предзахват: лента кадров «до нажатия», выбранный становится основным
-  stripUrls.forEach(u => URL.revokeObjectURL(u)); stripUrls = [];
-  const st = $('vstrip'); st.innerHTML = '';
-  if (s.frames && s.frames.length > 1){
-    s.frames.forEach(f => {
-      const u = URL.createObjectURL(f.blob); stripUrls.push(u);
-      const b = document.createElement('button');
-      b.style.backgroundImage = `url(${u})`;
-      b.innerHTML = `<span>${f.dt ? (f.dt / 1000).toFixed(2) + 's' : 'КЛИК'}</span>`;
-      b.classList.toggle('on', f.blob === s.blob);
-      b.onclick = () => {
-        s.blob = f.blob; URL.revokeObjectURL(s.url); s.url = URL.createObjectURL(f.blob);
-        putShot(s); updThumb(); showV();
-      };
-      st.appendChild(b);
-    });
-  }
 }
-let stripUrls = [];
 function shareFiles(files){
   // Вызывается прямо в обработчике нажатия — иначе iOS не откроет меню «Поделиться»
   if (navigator.canShare && navigator.canShare({files})){
@@ -639,11 +568,78 @@ $('vall').onclick = () => shareFiles(shots.map(fileOf)).then(ok => ok && toast('
 $('vdel').onclick = () => { delShot(vi); showV(); };
 $('vprev').onclick = () => { vi--; showV(); };
 $('vnext').onclick = () => { vi++; showV(); };
-$('vclose').onclick = () => { $('viewer').hidden = true; stripUrls.forEach(u => URL.revokeObjectURL(u)); stripUrls = []; $('vstrip').innerHTML = ''; };
+$('vclose').onclick = () => { $('viewer').hidden = true; resetZoom(); };
 $('thumb').onclick = openViewer;
-let sx = null;
-$('vwrap').addEventListener('touchstart', e => sx = e.touches[0].clientX, {passive:true});
-$('vwrap').addEventListener('touchend', e => { if (sx == null) return; const dx = e.changedTouches[0].clientX - sx; if (Math.abs(dx) > 50){ vi += dx < 0 ? 1 : -1; showV(); } sx = null; });
+
+/* Увеличение двумя пальцами, перетаскивание, двойной тап — как в «Фото» */
+const vimg = $('vimg'), vw = $('vwrap');
+let zs = 1, zx = 0, zy = 0;                 // масштаб и сдвиг
+const ptrs = new Map();
+let g0 = null, lastTap = 0, swipe = null;
+function applyZoom2(anim){
+  vimg.style.transition = anim ? 'transform .2s' : 'none';
+  vimg.style.transform = `translate(${zx}px,${zy}px) scale(${zs})`;
+}
+function clampPan(){
+  const w = vimg.offsetWidth * zs, h = vimg.offsetHeight * zs, r = vw.getBoundingClientRect();
+  const mx = Math.max(0, (w - r.width) / 2), my = Math.max(0, (h - r.height) / 2);
+  zx = Math.max(-mx, Math.min(mx, zx)); zy = Math.max(-my, Math.min(my, zy));
+}
+function resetZoom(){ zs = 1; zx = 0; zy = 0; applyZoom2(false); }
+function center(){ const r = vw.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }
+function zoomAt(ns, px, py){
+  // масштабировать вокруг точки (px,py), чтобы она оставалась под пальцами
+  const [cx, cy] = center(), k = ns / zs;
+  zx = (px - cx) - ((px - cx) - zx) * k; zy = (py - cy) - ((py - cy) - zy) * k; zs = ns;
+}
+vw.addEventListener('pointerdown', e => {
+  try { vw.setPointerCapture(e.pointerId); } catch(_){}
+  ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (ptrs.size === 2){
+    const [a, b] = [...ptrs.values()];
+    g0 = {d:Math.hypot(a[0]-b[0], a[1]-b[1]), mx:(a[0]+b[0])/2, my:(a[1]+b[1])/2, zs, zx, zy};
+    swipe = null;
+  } else if (ptrs.size === 1){
+    swipe = {x:e.clientX, y:e.clientY, zx, zy, t:performance.now()};
+  }
+});
+vw.addEventListener('pointermove', e => {
+  if (!ptrs.has(e.pointerId)) return;
+  ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (ptrs.size === 2 && g0){
+    const [a, b] = [...ptrs.values()];
+    const d = Math.hypot(a[0]-b[0], a[1]-b[1]), mx = (a[0]+b[0])/2, my = (a[1]+b[1])/2;
+    zs = g0.zs; zx = g0.zx + (mx - g0.mx); zy = g0.zy + (my - g0.my);
+    zoomAt(Math.max(.8, Math.min(8, g0.zs * d / g0.d)), mx, my);
+    applyZoom2(false);
+  } else if (ptrs.size === 1 && swipe && zs > 1){
+    zx = swipe.zx + e.clientX - swipe.x; zy = swipe.zy + e.clientY - swipe.y; clampPan(); applyZoom2(false);
+  } else if (ptrs.size === 1 && swipe && zs <= 1){
+    zx = (e.clientX - swipe.x) * .5; applyZoom2(false);      // лёгкий отклик при листании
+  }
+});
+const vEnd = e => {
+  if (!ptrs.has(e.pointerId)) return;
+  ptrs.delete(e.pointerId);
+  if (ptrs.size === 1){ const [p] = [...ptrs.values()]; swipe = {x:p[0], y:p[1], zx, zy, t:performance.now()}; g0 = null; return; }
+  if (ptrs.size) return;
+  if (g0 || zs < 1){ g0 = null; if (zs < 1.05){ resetZoom(); applyZoom2(true); } else { clampPan(); applyZoom2(true); } return; }
+  if (!swipe) return;
+  const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y, now = performance.now();
+  if (Math.hypot(dx, dy) < 10 && now - swipe.t < 300){                 // тап
+    if (now - lastTap < 300){                                         // двойной тап
+      if (zs > 1){ zs = 1; zx = 0; zy = 0; } else { zoomAt(2.5, e.clientX, e.clientY); clampPan(); }
+      applyZoom2(true); lastTap = 0;
+    } else lastTap = now;
+  } else if (zs <= 1){
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)){ vi += dx < 0 ? 1 : -1; showV(); }
+    else { zx = 0; applyZoom2(true); }
+  }
+  swipe = null;
+};
+vw.addEventListener('pointerup', vEnd);
+vw.addEventListener('pointercancel', vEnd);
+window.addEventListener('resize', () => { if (!$('viewer').hidden){ clampPan(); applyZoom2(false); } });
 
 /* ---------- Управление ---------- */
 LOOKS.forEach(L => {
@@ -657,14 +653,11 @@ $('bGrid').onclick = () => { S.grid = !S.grid; saveS(); render(); };
 $('bSh').onclick = () => { S.shutter = (S.shutter + 1) % SHUTTERS.length; saveS(); render(); };
 $('bLx').onclick = () => { S.lxMode = S.lxMode === 'trail' ? 'nd' : 'trail'; saveS(); render();
   toast(S.lxMode === 'trail' ? 'Шлейф: чёткий момент + размытое движение' : 'ND: всё движение размыто'); };
-$('bPre').onclick = () => { S.pre = !S.pre; saveS(); if (!S.pre) clearRing(); render();
-  toast(S.pre ? 'Предзахват: сохраняются и 0.4 с до нажатия' : 'Предзахват выключен'); };
 $('bMx').onclick = () => {
   if (multi){ cancelMulti(); toast('Мультиэкспозиция отменена'); return; }
   S.multi = (S.multi + 1) % MULTIS.length; saveS(); render();
   if (MULTIS[S.multi]) toast(`Мультиэкспозиция: ${MULTIS[S.multi]} нажатия → 1 кадр`);
 };
-$('bGrain').onclick = () => { S.grain = !S.grain; saveS(); render(); };
 $('bTap').onclick = () => { S.tap = !S.tap; saveS(); render(); toast(S.tap ? 'Съёмка касанием кадра' : 'Касание кадра выключено'); };
 $('bAsp').onclick = () => { const k = Object.keys(ASPECTS); S.aspect = k[(k.indexOf(S.aspect) + 1) % k.length]; saveS(); render(); };
 $('bZoom').onclick = () => { S.zoom = (S.zoom + 1) % ZOOMS.length; saveS(); applyZoom(); };
@@ -699,7 +692,7 @@ video.addEventListener('resize', render);
 window.addEventListener('resize', layout);
 window.addEventListener('orientationchange', () => setTimeout(render, 300));
 document.addEventListener('visibilitychange', async () => {
-  if (document.hidden){ clearRing(); if (stream) stream.getTracks().forEach(t => t.stop()); }
+  if (document.hidden){ if (stream) stream.getTracks().forEach(t => t.stop()); }
   else if ($('start').hidden) { try { await startCamera(S.lensId); render(); } catch(e){} }
 });
 
