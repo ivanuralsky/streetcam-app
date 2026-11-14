@@ -212,6 +212,7 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
 <div id="sheet" aria-hidden="true">
   <div class="grab"></div>
   <div id="tiles"></div>
+  <p id="camlist"></p>
   <p>В видоискателе: проведите вверх или вниз — экспозиция, влево или вправо — плёнка. Шкала зума: точки — камеры, нажатие на точку возвращает к ней. Удержание спуска — серия. Свои наборы: нажатие — вызвать, удержание — записать текущие настройки.</p>
 </div>
 
@@ -315,14 +316,17 @@ function lookMix(L){
 
 /* ---------- Камера ---------- */
 const video = $('video');
+let camDebug = [];
 let stream = null, track = null, lenses = [], caps = {}, facingFront = false;
 
+// Названия камер iOS отдаёт на языке телефона — узнаём их и по-английски, и по-русски, и ещё на нескольких языках
 function lensLabel(d){
   const l = (d.label || '').toLowerCase();
-  if (l.includes('front') || l.includes('передн')) return 'Self';
-  if (l.includes('ultra')) return '0.5×';
-  if (l.includes('tele')) return 'Tele';
-  if (l.includes('dual') || l.includes('triple')) return null; // виртуальные — пропускаем
+  let fm = []; try { fm = (d.getCapabilities && d.getCapabilities().facingMode) || []; } catch(e){}
+  if (fm.includes('user') || /front|передн|фронтал|frontal|vorder|avant|anterior|facetime|truedepth|前/.test(l)) return 'Self';
+  if (/dual|triple|двойн|тройн|doppel|dreifach|double|doble|doppia|tripla|dupla|双|三|デュアル|トリプル/.test(l)) return null;   // виртуальные — пропускаем
+  if (/ultra|сверхшир|ультра|超/.test(l)) return '0.5×';
+  if (/tele|теле|télé|望/.test(l)) return 'Tele';
   return '1×';
 }
 async function listLenses(){
@@ -331,6 +335,7 @@ async function listLenses(){
   for (const d of devs){ const n = lensLabel(d); if (n && !out.some(o => o.name === n)) out.push({id:d.deviceId, name:n}); }
   const order = ['0.5×','1×','Tele','Self'];
   out.sort((a,b) => order.indexOf(a.name) - order.indexOf(b.name));
+  camDebug = devs.map(d => `${d.label || 'без названия'} → ${lensLabel(d) || 'пропущена'}`);
   lenses = out.length ? out : devs.map((d,i) => ({id:d.deviceId, name:'Cam'+(i+1)}));
 }
 async function startCamera(deviceId){
@@ -1183,6 +1188,7 @@ const tileEls = [];
 })();
 function renderSheet(){
   if (!$('sheet').classList.contains('open')) return;
+  $('camlist').textContent = 'Камеры телефона: ' + (camDebug.join('; ') || 'не найдены');
   for (const [b, t] of tileEls){
     b.lastChild.textContent = t.v();
     b.classList.toggle('on', !!(t.on && t.on())); b.classList.toggle('off', !!(t.off && t.off()));
