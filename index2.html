@@ -62,6 +62,15 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
 #shiftread{position:absolute;left:9px;top:7px;font:400 15px var(--eng);letter-spacing:.07em;text-transform:uppercase;color:var(--brass);
   text-shadow:0 0 4px #000,0 0 2px #000;pointer-events:none}
 #shiftread.lim{color:var(--red)}
+#bSv{position:absolute;right:8px;bottom:14px;width:46px;height:46px;border-radius:50%;background:rgba(20,19,18,.72);
+  border:1px solid rgba(240,237,229,.35);display:flex;align-items:center;justify-content:center}
+#bSv svg{width:24px;height:24px}
+#bSv.on{background:var(--brass);border-color:var(--brass)}
+#bSv.on svg circle{stroke:#000}
+#bSv.on svg path{fill:#000}
+#svbar{position:absolute;left:0;right:0;bottom:0;height:9px;display:flex;pointer-events:none}
+#svbar i{display:block;height:100%;min-width:1px}
+#frame.sv #info{bottom:15px}
 #evscale{position:absolute;right:10px;top:18%;bottom:18%;width:26px;opacity:0;transition:opacity .25s;pointer-events:none}
 #evscale.show{opacity:1}
 #evscale::before{content:"";position:absolute;right:4px;top:0;bottom:0;width:2px;background:rgba(240,237,229,.55);
@@ -194,6 +203,9 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
       <div class="ov" id="flash"></div>
       <div id="evscale"><div id="evmark"></div></div>
       <div id="shiftread" hidden></div>
+      <div id="svbar" hidden></div>
+      <button id="bSv" aria-label="Shadow Vision: показать тональные зоны">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="#f0ede5" stroke-width="1.6"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="#f0ede5"/></svg></button>
       <div id="info"></div>
     </div>
   </div>
@@ -217,7 +229,7 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
   <div class="grab"></div>
   <div id="tiles"></div>
   <p id="camlist"></p>
-  <p>В видоискателе: проведите вверх или вниз — экспозиция, влево или вправо — плёнка. Шкала зума: точки — камеры, нажатие на точку возвращает к ней. Удержание спуска — серия. Свои наборы: нажатие — вызвать, удержание — записать текущие настройки.</p>
+  <p>В видоискателе: проведите вверх или вниз — экспозиция, влево или вправо — плёнка. Кнопка с полукругом в углу кадра — Shadow Vision: сцена в тональных зонах, полоска внизу показывает долю каждой. Шкала зума: точки — камеры, нажатие на точку возвращает к ней. Удержание спуска — серия. Свои наборы: нажатие — вызвать, удержание — записать текущие настройки.</p>
 </div>
 
 <div class="screen" id="start">
@@ -303,7 +315,7 @@ const ZONES = [{n:'Авто'},{n:'1.2 м',d:1.2},{n:'2 м',d:2},{n:'3 м',d:3},{
 
 /* ---------- Настройки ---------- */
 const DEF = {look:'trix', ev:0, grid:1, aspect:'3:2', tap:false, lensId:null, z:1, tele:2, shutter:0, lxMode:'nd', multi:0,
-  rf:false, shift:false, level:0, zebra:false, histo:false, trap:0, interval:0, filter:0, zone:0, ghostly:false, presets:[null,null,null]};
+  rf:false, shift:false, sv:false, svN:5, autorot:true, level:0, zebra:false, histo:false, trap:0, interval:0, filter:0, zone:0, ghostly:false, presets:[null,null,null]};
 let S = {...DEF};
 try { Object.assign(S, JSON.parse(localStorage.getItem('streetcam') || '{}')); } catch(e){}
 S.grid = +S.grid || 0; S.z = +S.z || 1; delete S['zoom'];
@@ -427,6 +439,7 @@ function layout(){
 
 /* ---------- Горизонт: датчик наклона ---------- */
 let roll = 0, rollOk = false, motionAsked = false, upV = null;
+let shotOri = 0;                 // 0 — прямо, 2 — вверх ногами, 1 — верх мира у правого края кадра, 3 — у левого
 function onOrient(e){
   if (e.beta == null || e.gamma == null){ rollOk = false; return; }
   const b = e.beta * Math.PI / 180, g = e.gamma * Math.PI / 180;
@@ -438,16 +451,22 @@ function onOrient(e){
     else if (v[1] > 0) v = [-v[0], -v[1], v[2]];
   }
   upV = upV ? upV.map((o, i) => o + (v[i] - o) * .25) : v;
+  // Положение телефона для поворота снимка; лежащий телефон сохраняет последнее положение
+  if (Math.hypot(v[0], v[1]) > .5){
+    if (Math.abs(v[1]) > Math.abs(v[0]) * 1.25) shotOri = v[1] < 0 ? 0 : 2;
+    else if (Math.abs(v[0]) > Math.abs(v[1]) * 1.25) shotOri = v[0] > 0 ? 1 : 3;
+  }
   if (Math.hypot(ux, uy) < .35){ rollOk = false; return; }        // телефон лежит — горизонта нет
   let th = Math.atan2(-ux, uy) * 180 / Math.PI;                   // поворот по часовой
   th -= 90 * Math.round(th / 90);                                 // отклонение от ближайшего «ровно»
   roll = rollOk ? roll + (th - roll) * .25 : th; rollOk = true;
 }
+let motionDenied = false;
 async function askMotion(){
   if (motionAsked) return true;
   try {
     if (window.DeviceOrientationEvent && DeviceOrientationEvent.requestPermission){
-      if (await DeviceOrientationEvent.requestPermission() !== 'granted'){ toast('Нет доступа к датчику наклона'); return false; }
+      if (await DeviceOrientationEvent.requestPermission() !== 'granted'){ motionDenied = true; toast('Нет доступа к датчику наклона'); return false; }
     }
     window.addEventListener('deviceorientation', onOrient);
     motionAsked = true; return true;
@@ -491,9 +510,11 @@ const autoRoll = () => (S.level === 2 && rollOk && Math.abs(roll) <= 20 && Math.
 /* ---------- WebGL: один шейдер для видоискателя и для снимка ---------- */
 const VS = `attribute vec2 p;varying vec2 v;void main(){v=(p+1.)*.5;gl_Position=vec4(p,0.,1.);}`;
 const FS = `precision highp float;varying vec2 v;uniform sampler2D t;uniform vec4 crop,fr;
-  uniform float ev,bw,sat,con,warm,fade,vig,mir,sc,blk,fl,raw,al,rot,rs,zeb,hf,ho;uniform vec3 mx;uniform vec2 res,vs;uniform mat3 hm;
+  uniform float ev,bw,sat,con,warm,fade,vig,mir,sc,blk,fl,raw,al,rot,rs,zeb,hf,ho,pz,ori;uniform vec3 mx;uniform vec2 res,vs;uniform mat3 hm;
   void main(){
-    vec2 d=vec2(v.x,fl>.5?1.-v.y:v.y),uv=d;
+    vec2 d=vec2(v.x,fl>.5?1.-v.y:v.y);
+    if(ori>.5){d-=.5;d=ori<1.5?vec2(-d.y,d.x):ori<2.5?-d:vec2(d.y,-d.x);d+=.5;}
+    vec2 uv=d;
     if(hf>0.){vec3 r=hm*vec3((d-.5)*res,ho);uv=hf*r.xy/max(r.z,1e-4)/vs+.5;
       if(r.z<=0.||uv.x<0.||uv.x>1.||uv.y<0.||uv.y>1.){gl_FragColor=vec4(0.,0.,0.,1.);return;}}
     else if(rot!=0.){vec2 q=(uv-.5)*res;float cs=cos(rot),sn=sin(rot);q=rs*vec2(q.x*cs-q.y*sn,q.x*sn+q.y*cs);uv=q/res+.5;}
@@ -506,9 +527,11 @@ const FS = `precision highp float;varying vec2 v;uniform sampler2D t;uniform vec
     c=clamp((c-.5)*con+.5,0.,1.);c=clamp((c-blk)/(1.-blk),0.,1.);c=mix(c,c*c*(3.-2.*c),sc);
     c=c*(1.-fade)+fade;
     c*=1.-vig*smoothstep(.25,.8,distance((d-fr.xy)/fr.zw,vec2(.5)));
-    if(zeb>.5&&hot>=.985&&mod(gl_FragCoord.x+gl_FragCoord.y,12.)<6.) c=vec3(.89,.26,.18);
+    if(pz>0.){float l=dot(c,vec3(.299,.587,.114));c=vec3(min(floor(l*pz),pz-1.)/(pz-1.));
+      if((hot>=.985||l>=.975)&&mod(gl_FragCoord.x+gl_FragCoord.y,10.)<3.) c=vec3(.89,.26,.18);}
+    else if(zeb>.5&&hot>=.985&&mod(gl_FragCoord.x+gl_FragCoord.y,12.)<6.) c=vec3(.89,.26,.18);
     gl_FragColor=vec4(clamp(c,0.,1.),1.);}`;
-const UNIFORMS = ['t','crop','fr','ev','bw','sat','con','warm','fade','vig','mir','mx','res','sc','blk','fl','raw','al','rot','rs','zeb','hf','ho','vs','hm'];
+const UNIFORMS = ['t','crop','fr','ev','bw','sat','con','warm','fade','vig','mir','mx','res','sc','blk','fl','raw','al','rot','rs','zeb','hf','ho','vs','hm','pz','ori'];
 function buildGL(g){
   if (!g) return null;
   const sh = (type, src) => { const s = g.createShader(type); g.shaderSource(s, src); g.compileShader(s); return s; };
@@ -530,7 +553,7 @@ function setLook(C, p, W, H){
   const {g, U} = C, L = p.L;
   g.uniform1i(U.t, 0);
   g.uniform1f(U.raw, 0); g.uniform1f(U.al, 1);
-  g.uniform1f(U.rot, 0); g.uniform1f(U.rs, 1); g.uniform1f(U.zeb, 0); g.uniform1f(U.hf, 0);
+  g.uniform1f(U.rot, 0); g.uniform1f(U.rs, 1); g.uniform1f(U.zeb, 0); g.uniform1f(U.hf, 0); g.uniform1f(U.pz, 0); g.uniform1f(U.ori, 0);
   g.uniform4f(U.fr, 0, 0, 1, 1);
   g.uniform1f(U.ev, Math.pow(2, p.ev));
   g.uniform1f(U.bw, L.bw ? 1 : 0);
@@ -555,6 +578,23 @@ const pvc = $('pv');
 const PV = buildGL(pvc.getContext('webgl', {antialias:false, alpha:false}));
 const pvOn = !!PV;
 const now0 = () => performance.now(); let shReadT = 0;
+/* Shadow Vision: сцена как 5–7 тональных зон. Зоны считаются по тону готового снимка (плёнка, фильтр, экспокоррекция) */
+const svA = document.createElement('canvas'), svB = document.createElement('canvas');
+const svAx = svA.getContext('2d'), svBx = svB.getContext('2d', {willReadFrequently:true});
+let svT = 0, svBarT = 0;
+function svShares(){                                       // полоска внизу кадра: какую долю занимает каждая зона
+  const L = look(), mx = lookMix(L), gain = Math.pow(2, S.ev), N = S.svN, cr = cropRect();
+  const x0 = Math.floor(cr[0] * svB.width), y0 = Math.floor(cr[1] * svB.height);
+  const w = Math.max(1, Math.round(cr[2] * svB.width)), h = Math.max(1, Math.round(cr[3] * svB.height));
+  const px = svBx.getImageData(x0, y0, w, h).data, cnt = new Array(N).fill(0); let n = 0;
+  for (let i = 0; i < px.length; i += 12){
+    let l = (px[i] * mx[0] + px[i+1] * mx[1] + px[i+2] * mx[2]) / 255 * gain;
+    l = clamp((l - .5) * L.con + .5, 0, 1); const b = L.blk || 0; l = clamp((l - b) / (1 - b), 0, 1);
+    const sc = L.sc || 0; l = l + (l * l * (3 - 2 * l) - l) * sc; const f = L.fade || 0; l = l * (1 - f) + f;
+    cnt[Math.min(N - 1, Math.floor(l * N))]++; n++;
+  }
+  $('svbar').innerHTML = cnt.map((c, i) => { const v = Math.round(i / (N - 1) * 255); return `<i style="flex:${(c / n).toFixed(4)} 1 0;background:rgb(${v},${v},${v})"></i>`; }).join('');
+}
 function drawPreview(){
   if (!pvOn || !video.videoWidth) return;
   const {g, U, tex} = PV, r = $('frame').getBoundingClientRect();
@@ -563,7 +603,20 @@ function drawPreview(){
   if (pvc.width !== W || pvc.height !== H){ pvc.width = W; pvc.height = H; }
   g.viewport(0, 0, W, H);
   g.bindTexture(g.TEXTURE_2D, tex);
-  try { g.texImage2D(g.TEXTURE_2D, 0, g.RGB, g.RGB, g.UNSIGNED_BYTE, video); } catch(e){ return; }
+  try {
+    if (S.sv){
+      const t = now0();
+      if (t - svT > 60){
+        svT = t;
+        const k = 128 / Math.max(video.videoWidth, video.videoHeight);
+        const w = Math.max(2, Math.round(video.videoWidth * k)), h = Math.max(2, Math.round(video.videoHeight * k));
+        if (svA.width !== w * 4){ svA.width = w * 4; svA.height = h * 4; svB.width = w; svB.height = h; }
+        svAx.drawImage(video, 0, 0, w * 4, h * 4); svBx.drawImage(svA, 0, 0, w, h);      // в два шага — без ряби
+        g.texImage2D(g.TEXTURE_2D, 0, g.RGB, g.RGB, g.UNSIGNED_BYTE, svB);
+        if (t - svBarT > 300){ svBarT = t; svShares(); }
+      }
+    } else g.texImage2D(g.TEXTURE_2D, 0, g.RGB, g.RGB, g.UNSIGNED_BYTE, video);
+  } catch(e){ return; }
   const cr = cropRect(), cw = video.videoWidth * cr[2], ch = video.videoHeight * cr[3];
   setLook(PV, {L:look(), ev:S.ev, mx:lookMix(look())}, cw, ch);
   const sh = shiftCalc(), a = autoRoll() * Math.PI / 180, s = a ? fitScale(a, cw, ch) : 1;
@@ -581,7 +634,7 @@ function drawPreview(){
     g.uniform1f(U.rot, -a); g.uniform1f(U.rs, s);
     $('lines').style.transform = '';
   }
-  g.uniform1f(U.zeb, S.zebra ? 1 : 0);
+  g.uniform1f(U.zeb, S.zebra ? 1 : 0); g.uniform1f(U.pz, S.sv ? S.svN : 0);
   g.uniform1f(U.fl, 1); g.uniform1f(U.mir, facingFront ? 1 : 0);
   g.drawArrays(g.TRIANGLES, 0, 6);
   if (S.level === 1){
@@ -652,7 +705,7 @@ const MAXQ = 8;
 function lensMm(){ return isBack() ? Math.round(26 * Math.max(S.z, curF())) : 0; }
 function params(){
   const L = look();
-  return {L, ev:S.ev, mx:lookMix(L), cr:cropRect(), mir:facingFront, vw:video.videoWidth, vh:video.videoHeight, roll:autoRoll(), sh:shiftCalc(),
+  return {L, ev:S.ev, mx:lookMix(L), cr:cropRect(), mir:facingFront, vw:video.videoWidth, vh:video.videoHeight, roll:autoRoll(), sh:shiftCalc(), ori:S.autorot && motionAsked ? shotOri : 0,
     meta:{look:L.name, mm:lensMm(), z:isBack() ? zText(Math.max(S.z, curF())) : '', asp:S.aspect, ev:S.ev, f:L.bw && S.filter ? FILTERS[S.filter].n : '', x:S.shift && shiftCalc() ? 'шифт' : ''}};
 }
 function grabFrame(){
@@ -680,7 +733,8 @@ function renderShot(img, p){
   const {cr, vw, vh} = p;
   const W = Math.round(vw * cr[2]), H = Math.round(vh * cr[3]);
   const a = p.sh ? 0 : (p.roll || 0) * Math.PI / 180, s = a ? fitScale(a, W, H) : 1;
-  const OW = Math.round(W * s), OH = Math.round(H * s);     // после выравнивания кадр чуть меньше — без растягивания
+  const odd = (p.ori || 0) % 2;                             // телефон держали боком — ширина и высота меняются местами
+  const OW = Math.round((odd ? H : W) * s), OH = Math.round((odd ? W : H) * s);     // после выравнивания кадр чуть меньше — без растягивания
   glc.width = OW; glc.height = OH;
   if (!gl){ glc.getContext('2d').drawImage(img, vw*cr[0], vh*cr[1], W, H, 0, 0, OW, OH); return; }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.disable(gl.BLEND);
@@ -691,6 +745,7 @@ function renderShot(img, p){
   gl.uniform1f(C.U.rot, -a); gl.uniform1f(C.U.rs, s);
   gl.uniform4f(C.U.crop, cr[0], cr[1], cr[2], cr[3]);
   if (p.sh) setShift(C, p.sh);
+  gl.uniform1f(C.U.ori, p.ori || 0);
   gl.uniform1f(C.U.fl, 1);
   gl.uniform1f(C.U.mir, p.mir ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -738,17 +793,19 @@ function accumDraw(acc, p, a){
   gl.bindFramebuffer(gl.FRAMEBUFFER, acc.fb); gl.viewport(0, 0, acc.W, acc.H);
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   const {U} = C, cr = p.cr;
-  gl.uniform1i(U.t, 0); gl.uniform1f(U.raw, 1); gl.uniform1f(U.al, a); gl.uniform1f(U.fl, 1); gl.uniform1f(U.rot, 0); gl.uniform1f(U.hf, 0);
+  gl.uniform1i(U.t, 0); gl.uniform1f(U.raw, 1); gl.uniform1f(U.al, a); gl.uniform1f(U.fl, 1); gl.uniform1f(U.rot, 0); gl.uniform1f(U.hf, 0); gl.uniform1f(U.ori, 0);
   gl.uniform1f(U.mir, p.mir ? 1 : 0); gl.uniform4f(U.crop, cr[0], cr[1], cr[2], cr[3]);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
   gl.disable(gl.BLEND); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
 async function finishAccum(acc, p, tag){
-  glc.width = acc.W; glc.height = acc.H;
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.disable(gl.BLEND); gl.viewport(0, 0, acc.W, acc.H);
+  const o = p.ori || 0, OW = o % 2 ? acc.H : acc.W, OH = o % 2 ? acc.W : acc.H;
+  glc.width = OW; glc.height = OH;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.disable(gl.BLEND); gl.viewport(0, 0, OW, OH);
   gl.bindTexture(gl.TEXTURE_2D, acc.t);
   setLook(C, p, acc.W, acc.H);
   gl.uniform4f(C.U.crop, 0, 0, 1, 1); gl.uniform1f(C.U.fl, 0); gl.uniform1f(C.U.mir, 0);
+  gl.uniform1f(C.U.ori, o === 1 ? 3 : o === 3 ? 1 : o);       // буфер хранится снизу вверх, поэтому боковые повороты меняются местами
   gl.drawArrays(gl.TRIANGLES, 0, 6);
   const blob = await toBlob(glc, .93);
   gl.deleteFramebuffer(acc.fb); gl.deleteTexture(acc.t);
@@ -1097,6 +1154,7 @@ function render(){
   $('level').hidden = S.level !== 1;
   $('histo').hidden = !S.histo;
   $('shiftread').hidden = !(S.shift && isBack());
+  $('bSv').classList.toggle('on', S.sv); $('svbar').hidden = !S.sv; $('frame').classList.toggle('sv', S.sv);
   const tz = $('trapzone'); tz.hidden = !S.trap;
   if (S.trap){ const z = trapRect(); tz.style.left = z[0]*100 + '%'; tz.style.top = z[1]*100 + '%'; tz.style.width = z[2]*100 + '%'; tz.style.height = z[3]*100 + '%'; }
   // значки активных режимов
@@ -1188,6 +1246,7 @@ const TILES = [
   ]],
   ['Экспозиция и фокус', [
     {n:'Пересвет', v:() => S.zebra ? 'Зебра' : 'Нет', on:() => S.zebra, tap:() => S.zebra = !S.zebra},
+    {n:'Shadow Vision', v:() => S.svN + ' зон', tap:() => { S.svN = S.svN >= 7 ? 5 : S.svN + 1; }},
     {n:'Гистограмма', v:() => S.histo ? 'Да' : 'Нет', on:() => S.histo, tap:() => S.histo = !S.histo},
     {n:'Фильтр ч/б', v:() => FILTERS[S.filter].n, on:() => S.filter > 0 && !!look().bw, off:() => !look().bw, tap:() => {
       if (!look().bw) return toast('Светофильтры работают с чёрно-белыми плёнками');
@@ -1198,6 +1257,10 @@ const TILES = [
   ]],
   ['Съёмка', [
     {n:'Спуск касанием кадра', v:() => S.tap ? 'Да' : 'Нет', on:() => S.tap, tap:() => { S.tap = !S.tap; if (S.tap) toast('Жесты в видоискателе отключены: любое касание — снимок'); }},
+    {n:'Автоповорот снимка', v:() => S.autorot ? 'Да' : 'Нет', on:() => S.autorot, tap:async () => {
+      S.autorot = !S.autorot;
+      if (S.autorot && !(await askMotion())) S.autorot = false;
+      else if (S.autorot) toast('Снимок сохраняется верхом вверх, как бы вы ни держали телефон'); }},
     {n:'Интервал', v:() => S.interval ? INTERVALS[S.interval] + ' с' : 'Нет', on:() => S.interval > 0, tap:() => {
       stopInterval(); S.interval = (S.interval + 1) % INTERVALS.length;
       if (S.interval) toast('Спуск запускает и останавливает съёмку'); }},
@@ -1309,6 +1372,11 @@ const fEnd = e => {
 frameEl.addEventListener('pointerup', fEnd);
 frameEl.addEventListener('pointercancel', fEnd);
 
+/* Shadow Vision — кнопка в углу видоискателя */
+$('bSv').addEventListener('pointerdown', e => e.stopPropagation());
+$('bSv').onclick = () => { S.sv = !S.sv; svT = 0; saveS(); render();
+  if (S.sv) toast(`${S.svN} тональных зон. Красная штриховка — светлое без деталей`); };
+
 /* Невидимка */
 let hintT;
 $('bStealth').onclick = () => {
@@ -1337,7 +1405,6 @@ document.addEventListener('visibilitychange', async () => {
 /* ---------- Запуск ---------- */
 let loopStarted = false;
 async function go(){
-  if (S.level || S.shift) askMotion().then(ok => { if (!ok){ S.level = 0; S.shift = false; render(); syncLens(); } });   // разрешение на датчик — только по нажатию
   const wasLens = S.lensId;
   try {
     await startCamera(null);
@@ -1358,9 +1425,20 @@ async function go(){
 // Страховка: если цикл кадров остановился (смена объектива и т.п.) — перезапустить
 setInterval(() => { if (loopStarted && !document.hidden && performance.now() - lastLoop > 700) frameLoop(); }, 500);
 $('go').onclick = go;
+// Датчик наклона iOS разрешает запрашивать только в ответ на касание — спрашиваем при первом же касании экрана
+const firstTouch = () => {
+  if (motionAsked || motionDenied){ document.removeEventListener('pointerup', firstTouch, true); document.removeEventListener('click', firstTouch, true); return; }
+  if (!(S.level || S.shift || S.autorot)) return;
+  askMotion().then(ok => { if (!ok && motionDenied && (S.level || S.shift)){ S.level = 0; S.shift = false; saveS(); render(); syncLens(); } });
+};
+document.addEventListener('pointerup', firstTouch, true);
+document.addEventListener('click', firstTouch, true);
 if (!window.isSecureContext || !navigator.mediaDevices){
   $('startMsg').textContent = 'Камера работает только по адресу https://. Откройте приложение с сайта, а не из файла.';
   $('go').hidden = true;
+} else {                                                   // камера включается сама, кнопка остаётся на случай отказа
+  $('go').hidden = true; $('startMsg').textContent = 'Включаю камеру…';
+  go().then(() => { $('go').hidden = false; });
 }
 
 // Иконка для экрана «Домой»
