@@ -534,11 +534,11 @@ const FS = `precision highp float;varying vec2 v;uniform sampler2D t;uniform vec
     c*=1.-vig*smoothstep(.25,.8,distance((d-fr.xy)/fr.zw,vec2(.5)));
     if(pz>0.){float l=dot(c,vec3(.299,.587,.114));float hx=mod(gl_FragCoord.x+gl_FragCoord.y,10.);
       bool blown=hot>=.985||l>=.975;
-      if(pm<.5){c=vec3(min(floor(l*pz),pz-1.)/(pz-1.));if(blown&&hx<3.) c=vec3(.89,.26,.18);}                 // зоны с чёткими границами
-      else if(pm<1.5){float x=clamp(l*pz-.5,0.,pz-1.);c=vec3((floor(x)+smoothstep(.1,.9,fract(x)))/(pz-1.));  // те же зоны, но пятна перетекают друг в друга
+      if(pm<.5){c=vec3(min(floor(l*pz),pz-1.)/(pz-1.));if(blown&&hx<3.) c=vec3(.89,.26,.18);}
+      else if(pm<1.5){float x=clamp(l*pz-.5,0.,pz-1.);c=vec3((floor(x)+smoothstep(.1,.9,fract(x)))/(pz-1.));
         if(blown&&hx<3.) c=mix(c,vec3(.89,.26,.18),.75);}
-      else if(pm<2.5){c=vec3(smoothstep(pth-.015,pth+.015,l));}                                                // силуэт: только чёрное и белое
-      else{c=vec3(mix(.3,.6,l));if(l<=.045) c=hx<3.?vec3(.8,.65,.36):vec3(0.);else if(blown) c=hx<3.?vec3(.89,.26,.18):vec3(1.);}  // потери
+      else if(pm<2.5){c=vec3(smoothstep(pth-.015,pth+.015,l));}
+      else{c=vec3(mix(.3,.6,l));if(l<=.045) c=hx<3.?vec3(.8,.65,.36):vec3(0.);else if(blown) c=hx<3.?vec3(.89,.26,.18):vec3(1.);}
     }
     else if(zeb>.5&&hot>=.985&&mod(gl_FragCoord.x+gl_FragCoord.y,12.)<6.) c=vec3(.89,.26,.18);
     gl_FragColor=vec4(clamp(c,0.,1.),1.);}`;
@@ -588,6 +588,7 @@ const gl = C && C.g;
 const pvc = $('pv');
 const PV = buildGL(pvc.getContext('webgl', {antialias:false, alpha:false}));
 const pvOn = !!PV;
+if (!pvOn) pvc.style.display = 'none';                     // без WebGL видоискатель показывает само видео
 const now0 = () => performance.now(); let shReadT = 0;
 /* Shadow Vision: сцена как 5–7 тональных зон. Зоны считаются по тону готового снимка (плёнка, фильтр, экспокоррекция) */
 const svA = document.createElement('canvas'), svB = document.createElement('canvas');
