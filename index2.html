@@ -59,9 +59,11 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
 #histo{position:absolute;right:8px;top:8px;width:84px;height:36px;border-radius:3px;background:rgba(0,0,0,.45);pointer-events:none}
 #info{position:absolute;left:9px;bottom:6px;font:400 14px var(--eng);letter-spacing:.07em;text-transform:uppercase;
   color:rgba(240,237,229,.85);text-shadow:0 0 4px #000,0 0 2px #000;pointer-events:none}
-#shiftread{position:absolute;left:9px;top:7px;font:400 15px var(--eng);letter-spacing:.07em;text-transform:uppercase;color:var(--brass);
-  text-shadow:0 0 4px #000,0 0 2px #000;pointer-events:none}
-#shiftread.lim{color:var(--red)}
+#shiftread{position:absolute;left:8px;top:8px;height:38px;min-width:64px;padding:4px 11px 0;border-radius:4px;
+  background:rgba(20,19,18,.72);border:1px solid rgba(240,237,229,.28);
+  font:400 17px/1 var(--eng);letter-spacing:.07em;text-transform:uppercase;color:var(--paint)}
+#shiftread.on{background:var(--brass);border-color:var(--brass);color:#000}
+#shiftread.on.lim{background:var(--red);border-color:var(--red);color:#fff}
 #bSv{position:absolute;right:8px;bottom:14px;width:46px;height:46px;border-radius:50%;background:rgba(20,19,18,.72);
   border:1px solid rgba(240,237,229,.35);display:flex;align-items:center;justify-content:center}
 #bSv svg{width:24px;height:24px}
@@ -207,7 +209,7 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
       <canvas id="histo" width="84" height="36" hidden></canvas>
       <div class="ov" id="flash"></div>
       <div id="evscale"><div id="evmark"></div></div>
-      <div id="shiftread" hidden></div>
+      <button id="shiftread" aria-label="Шифт: выпрямлять кадр при наклоне телефона" hidden>шифт</button>
       <div id="svbar" hidden></div>
       <div id="svmodes" hidden></div>
       <button id="bSv" aria-label="Shadow Vision: показать тональные зоны">
@@ -1207,7 +1209,8 @@ function render(){
   $('grid').innerHTML = GRID_SVG[S.grid] || '';
   $('level').hidden = S.level !== 1;
   $('histo').hidden = !S.histo;
-  $('shiftread').hidden = !(S.shift && isBack());
+  $('shiftread').hidden = !isBack(); $('shiftread').classList.toggle('on', S.shift);
+  if (!S.shift){ $('shiftread').textContent = 'шифт'; $('shiftread').classList.remove('lim'); }
   $('bSv').classList.toggle('on', S.sv); $('svbar').hidden = !S.sv; $('svmodes').hidden = !S.sv;
   document.querySelectorAll('#svmodes button').forEach((b, i) => b.classList.toggle('on', i === S.svMode && b.id !== 'svAlpha'));
   if ($('svAlpha')) $('svAlpha').textContent = Math.round(SV_ALPHAS[S.svA] * 100) + '%'; $('frame').classList.toggle('sv', S.sv);
@@ -1291,11 +1294,7 @@ const TILES = [
       if (S.level && !(await askMotion())) S.level = 0;
       else if (S.level === 2) toast('Завал до 20° выравнивается на снимке');
     }},
-    {n:'Шифт', v:() => S.shift ? 'Да' : 'Нет', on:() => S.shift, tap:async () => {
-      S.shift = !S.shift;
-      if (S.shift && !(await askMotion())) S.shift = false;
-      else if (S.shift) toast('Держите телефон с наклоном вниз — кадр выпрямится. Снимает камера с более широким углом');
-      syncLens(); }},
+    {n:'Шифт', v:() => S.shift ? 'Да' : 'Нет', on:() => S.shift, tap:toggleShift},
     {n:'Телеобъектив', v:() => lenses.some(l => l.name === 'Tele') ? TELES[S.tele] + '×' : 'Нет', off:() => !lenses.some(l => l.name === 'Tele'), tap:() => {
       if (!lenses.some(l => l.name === 'Tele')) return toast('Телеобъектив не найден');
       S.tele = (S.tele + 1) % TELES.length; toast('Укажите кратность телеобъектива вашего телефона'); syncLens(); }},
@@ -1427,6 +1426,16 @@ const fEnd = e => {
 };
 frameEl.addEventListener('pointerup', fEnd);
 frameEl.addEventListener('pointercancel', fEnd);
+
+/* Шифт — кнопка в левом верхнем углу видоискателя */
+async function toggleShift(){
+  S.shift = !S.shift;
+  if (S.shift && !(await askMotion())) S.shift = false;
+  else if (S.shift) toast('Держите телефон с наклоном вниз — кадр выпрямится. Снимает камера с более широким углом');
+  syncLens();
+}
+$('shiftread').addEventListener('pointerdown', e => e.stopPropagation());
+$('shiftread').onclick = async () => { await toggleShift(); shReadT = 0; saveS(); render(); };
 
 /* Shadow Vision — кнопка в углу видоискателя */
 $('bSv').addEventListener('pointerdown', e => e.stopPropagation());
