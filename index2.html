@@ -74,6 +74,7 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
 #svmodes{position:absolute;left:8px;right:62px;bottom:19px;display:flex;gap:4px}
 #svmodes button{flex:1;height:36px;border-radius:4px;background:rgba(20,19,18,.72);border:1px solid rgba(240,237,229,.28);
   font:400 16px/1 var(--eng);letter-spacing:.05em;text-transform:uppercase;color:var(--paint);padding-top:3px}
+#svmodes #svAlpha{flex:0 0 50px}
 #svmodes button.on{background:var(--brass);border-color:var(--brass);color:#000}
 #evscale{position:absolute;right:10px;top:18%;bottom:18%;width:26px;opacity:0;transition:opacity .25s;pointer-events:none}
 #evscale.show{opacity:1}
@@ -320,7 +321,7 @@ const ZONES = [{n:'Авто'},{n:'1.2 м',d:1.2},{n:'2 м',d:2},{n:'3 м',d:3},{
 
 /* ---------- Настройки ---------- */
 const DEF = {look:'trix', ev:0, grid:1, aspect:'3:2', tap:false, lensId:null, z:1, tele:2, shutter:0, lxMode:'nd', multi:0,
-  rf:false, shift:false, sv:false, svN:5, svMode:0, autorot:true, level:0, zebra:false, histo:false, trap:0, interval:0, filter:0, zone:0, ghostly:false, presets:[null,null,null]};
+  rf:false, shift:false, sv:false, svN:5, svMode:0, svA:0, autorot:true, level:0, zebra:false, histo:false, trap:0, interval:0, filter:0, zone:0, ghostly:false, presets:[null,null,null]};
 let S = {...DEF};
 try { Object.assign(S, JSON.parse(localStorage.getItem('streetcam') || '{}')); } catch(e){}
 S.grid = +S.grid || 0; S.z = +S.z || 1; delete S['zoom'];
@@ -593,7 +594,8 @@ const now0 = () => performance.now(); let shReadT = 0;
 /* Shadow Vision: сцена как 5–7 тональных зон. Зоны считаются по тону готового снимка (плёнка, фильтр, экспокоррекция) */
 const svA = document.createElement('canvas'), svB = document.createElement('canvas');
 const svAx = svA.getContext('2d'), svBx = svB.getContext('2d', {willReadFrequently:true});
-let svT = 0, svBarT = 0, svTh = .5;
+let svT = 0, svBarT = 0, svTh = .5, svTex = null;
+const SV_ALPHAS = [1, .7, .45];                           // плотность пятен поверх картинки
 // px — до какого размера уменьшается кадр перед разбором: чем меньше, тем крупнее и мягче пятна
 const SV_MODES = [
   {n:'Зоны',   px:128, tip:'Тональные зоны с чёткими границами'},
@@ -635,20 +637,27 @@ function drawPreview(){
   const W = Math.max(2, Math.round(r.width * d)), H = Math.max(2, Math.round(r.height * d));
   if (pvc.width !== W || pvc.height !== H){ pvc.width = W; pvc.height = H; }
   g.viewport(0, 0, W, H);
-  g.bindTexture(g.TEXTURE_2D, tex);
+  const mixed = S.sv && SV_ALPHAS[S.svA] < 1;               // пятна полупрозрачные — под ними видна обычная картинка
   try {
     if (S.sv){
       const t = now0();
+      if (!svTex){
+        svTex = g.createTexture(); g.bindTexture(g.TEXTURE_2D, svTex);
+        for (const [k,v] of [[g.TEXTURE_MIN_FILTER,g.LINEAR],[g.TEXTURE_MAG_FILTER,g.LINEAR],[g.TEXTURE_WRAP_S,g.CLAMP_TO_EDGE],[g.TEXTURE_WRAP_T,g.CLAMP_TO_EDGE]]) g.texParameteri(g.TEXTURE_2D, k, v);
+        svT = 0;
+      }
       if (t - svT > 60){
         svT = t;
         const k = SV_MODES[S.svMode].px / Math.max(video.videoWidth, video.videoHeight);
         const w = Math.max(2, Math.round(video.videoWidth * k)), h = Math.max(2, Math.round(video.videoHeight * k));
         if (svA.width !== w * 4){ svA.width = w * 4; svA.height = h * 4; svB.width = w; svB.height = h; }
         svAx.drawImage(video, 0, 0, w * 4, h * 4); svBx.drawImage(svA, 0, 0, w, h);      // в два шага — без ряби
+        g.bindTexture(g.TEXTURE_2D, svTex);
         g.texImage2D(g.TEXTURE_2D, 0, g.RGB, g.RGB, g.UNSIGNED_BYTE, svB);
         if (t - svBarT > 300){ svBarT = t; svShares(); }
       }
-    } else g.texImage2D(g.TEXTURE_2D, 0, g.RGB, g.RGB, g.UNSIGNED_BYTE, video);
+    }
+    if (!S.sv || mixed){ g.bindTexture(g.TEXTURE_2D, tex); g.texImage2D(g.TEXTURE_2D, 0, g.RGB, g.RGB, g.UNSIGNED_BYTE, video); }
   } catch(e){ return; }
   const cr = cropRect(), cw = video.videoWidth * cr[2], ch = video.videoHeight * cr[3];
   setLook(PV, {L:look(), ev:S.ev, mx:lookMix(look())}, cw, ch);
@@ -667,9 +676,21 @@ function drawPreview(){
     g.uniform1f(U.rot, -a); g.uniform1f(U.rs, s);
     $('lines').style.transform = '';
   }
-  g.uniform1f(U.zeb, S.zebra ? 1 : 0); g.uniform1f(U.pz, S.sv ? S.svN : 0); g.uniform1f(U.pm, S.svMode); g.uniform1f(U.pth, svTh);
+  g.uniform1f(U.pm, S.svMode); g.uniform1f(U.pth, svTh);
   g.uniform1f(U.fl, 1); g.uniform1f(U.mir, facingFront ? 1 : 0);
-  g.drawArrays(g.TRIANGLES, 0, 6);
+  g.disable(g.BLEND);
+  if (!S.sv || mixed){                                       // обычная картинка
+    g.bindTexture(g.TEXTURE_2D, tex);
+    g.uniform1f(U.zeb, S.zebra && !S.sv ? 1 : 0); g.uniform1f(U.pz, 0);
+    g.drawArrays(g.TRIANGLES, 0, 6);
+  }
+  if (S.sv){                                                 // пятна Shadow Vision поверх
+    g.bindTexture(g.TEXTURE_2D, svTex);
+    g.uniform1f(U.zeb, 0); g.uniform1f(U.pz, S.svN);
+    if (mixed){ g.enable(g.BLEND); g.blendColor(0, 0, 0, SV_ALPHAS[S.svA]); g.blendFunc(g.CONSTANT_ALPHA, g.ONE_MINUS_CONSTANT_ALPHA); }
+    g.drawArrays(g.TRIANGLES, 0, 6);
+    g.disable(g.BLEND);
+  }
   if (S.level === 1){
     const lv = $('level');
     lv.style.transform = `rotate(${rollOk ? -roll : 0}deg)`; lv.classList.toggle('ok', rollOk && Math.abs(roll) < .8);
@@ -1188,7 +1209,8 @@ function render(){
   $('histo').hidden = !S.histo;
   $('shiftread').hidden = !(S.shift && isBack());
   $('bSv').classList.toggle('on', S.sv); $('svbar').hidden = !S.sv; $('svmodes').hidden = !S.sv;
-  document.querySelectorAll('#svmodes button').forEach((b, i) => b.classList.toggle('on', i === S.svMode)); $('frame').classList.toggle('sv', S.sv);
+  document.querySelectorAll('#svmodes button').forEach((b, i) => b.classList.toggle('on', i === S.svMode && b.id !== 'svAlpha'));
+  if ($('svAlpha')) $('svAlpha').textContent = Math.round(SV_ALPHAS[S.svA] * 100) + '%'; $('frame').classList.toggle('sv', S.sv);
   const tz = $('trapzone'); tz.hidden = !S.trap;
   if (S.trap){ const z = trapRect(); tz.style.left = z[0]*100 + '%'; tz.style.top = z[1]*100 + '%'; tz.style.width = z[2]*100 + '%'; tz.style.height = z[3]*100 + '%'; }
   // значки активных режимов
@@ -1410,7 +1432,14 @@ frameEl.addEventListener('pointercancel', fEnd);
 $('bSv').addEventListener('pointerdown', e => e.stopPropagation());
 $('bSv').onclick = () => { S.sv = !S.sv; svT = 0; saveS(); render();
   if (S.sv) toast(SV_MODES[S.svMode].tip); };
-S.svMode = clamp(S.svMode | 0, 0, SV_MODES.length - 1);
+S.svMode = clamp(S.svMode | 0, 0, SV_MODES.length - 1); S.svA = clamp(S.svA | 0, 0, SV_ALPHAS.length - 1);
+setTimeout(() => {                                         // кнопка плотности — последней в ряду режимов
+  const b = document.createElement('button'); b.id = 'svAlpha'; b.setAttribute('aria-label', 'Плотность пятен');
+  b.addEventListener('pointerdown', e => e.stopPropagation());
+  b.onclick = () => { S.svA = (S.svA + 1) % SV_ALPHAS.length; saveS(); render();
+    toast(S.svA ? `Пятна на ${Math.round(SV_ALPHAS[S.svA] * 100)}%, под ними видна картинка` : 'Только пятна'); };
+  $('svmodes').appendChild(b); render();
+}, 0);
 SV_MODES.forEach((m, i) => {
   const b = document.createElement('button'); b.textContent = m.n;
   b.addEventListener('pointerdown', e => e.stopPropagation());
