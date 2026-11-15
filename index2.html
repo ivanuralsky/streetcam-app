@@ -70,7 +70,11 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
 #bSv.on svg path{fill:#000}
 #svbar{position:absolute;left:0;right:0;bottom:0;height:9px;display:flex;pointer-events:none}
 #svbar i{display:block;height:100%;min-width:1px}
-#frame.sv #info{bottom:15px}
+#frame.sv #info{display:none}
+#svmodes{position:absolute;left:8px;right:62px;bottom:19px;display:flex;gap:4px}
+#svmodes button{flex:1;height:36px;border-radius:4px;background:rgba(20,19,18,.72);border:1px solid rgba(240,237,229,.28);
+  font:400 16px/1 var(--eng);letter-spacing:.05em;text-transform:uppercase;color:var(--paint);padding-top:3px}
+#svmodes button.on{background:var(--brass);border-color:var(--brass);color:#000}
 #evscale{position:absolute;right:10px;top:18%;bottom:18%;width:26px;opacity:0;transition:opacity .25s;pointer-events:none}
 #evscale.show{opacity:1}
 #evscale::before{content:"";position:absolute;right:4px;top:0;bottom:0;width:2px;background:rgba(240,237,229,.55);
@@ -204,6 +208,7 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
       <div id="evscale"><div id="evmark"></div></div>
       <div id="shiftread" hidden></div>
       <div id="svbar" hidden></div>
+      <div id="svmodes" hidden></div>
       <button id="bSv" aria-label="Shadow Vision: показать тональные зоны">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="#f0ede5" stroke-width="1.6"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="#f0ede5"/></svg></button>
       <div id="info"></div>
@@ -315,7 +320,7 @@ const ZONES = [{n:'Авто'},{n:'1.2 м',d:1.2},{n:'2 м',d:2},{n:'3 м',d:3},{
 
 /* ---------- Настройки ---------- */
 const DEF = {look:'trix', ev:0, grid:1, aspect:'3:2', tap:false, lensId:null, z:1, tele:2, shutter:0, lxMode:'nd', multi:0,
-  rf:false, shift:false, sv:false, svN:5, autorot:true, level:0, zebra:false, histo:false, trap:0, interval:0, filter:0, zone:0, ghostly:false, presets:[null,null,null]};
+  rf:false, shift:false, sv:false, svN:5, svMode:0, autorot:true, level:0, zebra:false, histo:false, trap:0, interval:0, filter:0, zone:0, ghostly:false, presets:[null,null,null]};
 let S = {...DEF};
 try { Object.assign(S, JSON.parse(localStorage.getItem('streetcam') || '{}')); } catch(e){}
 S.grid = +S.grid || 0; S.z = +S.z || 1; delete S['zoom'];
@@ -510,7 +515,7 @@ const autoRoll = () => (S.level === 2 && rollOk && Math.abs(roll) <= 20 && Math.
 /* ---------- WebGL: один шейдер для видоискателя и для снимка ---------- */
 const VS = `attribute vec2 p;varying vec2 v;void main(){v=(p+1.)*.5;gl_Position=vec4(p,0.,1.);}`;
 const FS = `precision highp float;varying vec2 v;uniform sampler2D t;uniform vec4 crop,fr;
-  uniform float ev,bw,sat,con,warm,fade,vig,mir,sc,blk,fl,raw,al,rot,rs,zeb,hf,ho,pz,ori;uniform vec3 mx;uniform vec2 res,vs;uniform mat3 hm;
+  uniform float ev,bw,sat,con,warm,fade,vig,mir,sc,blk,fl,raw,al,rot,rs,zeb,hf,ho,pz,ori,pm,pth;uniform vec3 mx;uniform vec2 res,vs;uniform mat3 hm;
   void main(){
     vec2 d=vec2(v.x,fl>.5?1.-v.y:v.y);
     if(ori>.5){d-=.5;d=ori<1.5?vec2(-d.y,d.x):ori<2.5?-d:vec2(d.y,-d.x);d+=.5;}
@@ -527,11 +532,17 @@ const FS = `precision highp float;varying vec2 v;uniform sampler2D t;uniform vec
     c=clamp((c-.5)*con+.5,0.,1.);c=clamp((c-blk)/(1.-blk),0.,1.);c=mix(c,c*c*(3.-2.*c),sc);
     c=c*(1.-fade)+fade;
     c*=1.-vig*smoothstep(.25,.8,distance((d-fr.xy)/fr.zw,vec2(.5)));
-    if(pz>0.){float l=dot(c,vec3(.299,.587,.114));c=vec3(min(floor(l*pz),pz-1.)/(pz-1.));
-      if((hot>=.985||l>=.975)&&mod(gl_FragCoord.x+gl_FragCoord.y,10.)<3.) c=vec3(.89,.26,.18);}
+    if(pz>0.){float l=dot(c,vec3(.299,.587,.114));float hx=mod(gl_FragCoord.x+gl_FragCoord.y,10.);
+      bool blown=hot>=.985||l>=.975;
+      if(pm<.5){c=vec3(min(floor(l*pz),pz-1.)/(pz-1.));if(blown&&hx<3.) c=vec3(.89,.26,.18);}                 // зоны с чёткими границами
+      else if(pm<1.5){float x=clamp(l*pz-.5,0.,pz-1.);c=vec3((floor(x)+smoothstep(.1,.9,fract(x)))/(pz-1.));  // те же зоны, но пятна перетекают друг в друга
+        if(blown&&hx<3.) c=mix(c,vec3(.89,.26,.18),.75);}
+      else if(pm<2.5){c=vec3(smoothstep(pth-.015,pth+.015,l));}                                                // силуэт: только чёрное и белое
+      else{c=vec3(mix(.3,.6,l));if(l<=.045) c=hx<3.?vec3(.8,.65,.36):vec3(0.);else if(blown) c=hx<3.?vec3(.89,.26,.18):vec3(1.);}  // потери
+    }
     else if(zeb>.5&&hot>=.985&&mod(gl_FragCoord.x+gl_FragCoord.y,12.)<6.) c=vec3(.89,.26,.18);
     gl_FragColor=vec4(clamp(c,0.,1.),1.);}`;
-const UNIFORMS = ['t','crop','fr','ev','bw','sat','con','warm','fade','vig','mir','mx','res','sc','blk','fl','raw','al','rot','rs','zeb','hf','ho','vs','hm','pz','ori'];
+const UNIFORMS = ['t','crop','fr','ev','bw','sat','con','warm','fade','vig','mir','mx','res','sc','blk','fl','raw','al','rot','rs','zeb','hf','ho','vs','hm','pz','ori','pm','pth'];
 function buildGL(g){
   if (!g) return null;
   const sh = (type, src) => { const s = g.createShader(type); g.shaderSource(s, src); g.compileShader(s); return s; };
@@ -581,19 +592,40 @@ const now0 = () => performance.now(); let shReadT = 0;
 /* Shadow Vision: сцена как 5–7 тональных зон. Зоны считаются по тону готового снимка (плёнка, фильтр, экспокоррекция) */
 const svA = document.createElement('canvas'), svB = document.createElement('canvas');
 const svAx = svA.getContext('2d'), svBx = svB.getContext('2d', {willReadFrequently:true});
-let svT = 0, svBarT = 0;
-function svShares(){                                       // полоска внизу кадра: какую долю занимает каждая зона
-  const L = look(), mx = lookMix(L), gain = Math.pow(2, S.ev), N = S.svN, cr = cropRect();
+let svT = 0, svBarT = 0, svTh = .5;
+// px — до какого размера уменьшается кадр перед разбором: чем меньше, тем крупнее и мягче пятна
+const SV_MODES = [
+  {n:'Зоны',   px:128, tip:'Тональные зоны с чёткими границами'},
+  {n:'Плавно', px:72,  tip:'Те же зоны, но пятна мягко перетекают друг в друга'},
+  {n:'Силуэт', px:128, tip:'Только чёрное и белое: читается ли фигура'},
+  {n:'Потери', px:160, tip:'Латунная штриховка — тени без деталей, красная — света без деталей'},
+];
+function svShares(){                                       // полоска внизу кадра: какую долю занимает каждый тон
+  const L = look(), mx = lookMix(L), gain = Math.pow(2, S.ev), N = S.svN, cr = cropRect(), m = S.svMode;
   const x0 = Math.floor(cr[0] * svB.width), y0 = Math.floor(cr[1] * svB.height);
   const w = Math.max(1, Math.round(cr[2] * svB.width)), h = Math.max(1, Math.round(cr[3] * svB.height));
-  const px = svBx.getImageData(x0, y0, w, h).data, cnt = new Array(N).fill(0); let n = 0;
-  for (let i = 0; i < px.length; i += 12){
+  const px = svBx.getImageData(x0, y0, w, h).data, hist = new Array(64).fill(0); let n = 0;
+  for (let i = 0; i < px.length; i += 8){
     let l = (px[i] * mx[0] + px[i+1] * mx[1] + px[i+2] * mx[2]) / 255 * gain;
     l = clamp((l - .5) * L.con + .5, 0, 1); const b = L.blk || 0; l = clamp((l - b) / (1 - b), 0, 1);
     const sc = L.sc || 0; l = l + (l * l * (3 - 2 * l) - l) * sc; const f = L.fade || 0; l = l * (1 - f) + f;
-    cnt[Math.min(N - 1, Math.floor(l * N))]++; n++;
+    hist[Math.min(63, Math.floor(l * 64))]++; n++;
   }
-  $('svbar').innerHTML = cnt.map((c, i) => { const v = Math.round(i / (N - 1) * 255); return `<i style="flex:${(c / n).toFixed(4)} 1 0;background:rgb(${v},${v},${v})"></i>`; }).join('');
+  // порог силуэта подбирается сам: так, чтобы светлое и тёмное разошлись сильнее всего (метод Оцу)
+  let sum = 0; for (let i = 0; i < 64; i++) sum += i * hist[i];
+  let wB = 0, sB = 0, best = -1, th = 32;
+  for (let i = 0; i < 64; i++){
+    wB += hist[i]; if (!wB) continue; const wF = n - wB; if (!wF) break;
+    sB += i * hist[i]; const d = sB / wB - (sum - sB) / wF, v = wB * wF * d * d;
+    if (v > best){ best = v; th = i + 1; }
+  }
+  svTh += (th / 64 - svTh) * .35;
+  let seg;
+  if (m <= 1){ seg = new Array(N).fill(0).map((_, i) => [0, Math.round(i / (N - 1) * 255)]); hist.forEach((c, i) => seg[Math.min(N - 1, Math.floor((i + .5) / 64 * N))][0] += c);
+    seg = seg.map(([c, v]) => [c, `rgb(${v},${v},${v})`]); }
+  else if (m === 2){ const t = Math.round(svTh * 64); seg = [[hist.slice(0, t).reduce((a, b) => a + b, 0), '#000'], [hist.slice(t).reduce((a, b) => a + b, 0), '#fff']]; }
+  else { const lo = hist.slice(0, 3).reduce((a, b) => a + b, 0), hi = hist.slice(62).reduce((a, b) => a + b, 0); seg = [[lo, '#cda75c'], [n - lo - hi, '#777'], [hi, '#e4432f']]; }
+  $('svbar').innerHTML = seg.map(([c, col]) => `<i style="flex:${(c / n).toFixed(4)} 1 0;background:${col}"></i>`).join('');
 }
 function drawPreview(){
   if (!pvOn || !video.videoWidth) return;
@@ -608,7 +640,7 @@ function drawPreview(){
       const t = now0();
       if (t - svT > 60){
         svT = t;
-        const k = 128 / Math.max(video.videoWidth, video.videoHeight);
+        const k = SV_MODES[S.svMode].px / Math.max(video.videoWidth, video.videoHeight);
         const w = Math.max(2, Math.round(video.videoWidth * k)), h = Math.max(2, Math.round(video.videoHeight * k));
         if (svA.width !== w * 4){ svA.width = w * 4; svA.height = h * 4; svB.width = w; svB.height = h; }
         svAx.drawImage(video, 0, 0, w * 4, h * 4); svBx.drawImage(svA, 0, 0, w, h);      // в два шага — без ряби
@@ -634,7 +666,7 @@ function drawPreview(){
     g.uniform1f(U.rot, -a); g.uniform1f(U.rs, s);
     $('lines').style.transform = '';
   }
-  g.uniform1f(U.zeb, S.zebra ? 1 : 0); g.uniform1f(U.pz, S.sv ? S.svN : 0);
+  g.uniform1f(U.zeb, S.zebra ? 1 : 0); g.uniform1f(U.pz, S.sv ? S.svN : 0); g.uniform1f(U.pm, S.svMode); g.uniform1f(U.pth, svTh);
   g.uniform1f(U.fl, 1); g.uniform1f(U.mir, facingFront ? 1 : 0);
   g.drawArrays(g.TRIANGLES, 0, 6);
   if (S.level === 1){
@@ -1154,7 +1186,8 @@ function render(){
   $('level').hidden = S.level !== 1;
   $('histo').hidden = !S.histo;
   $('shiftread').hidden = !(S.shift && isBack());
-  $('bSv').classList.toggle('on', S.sv); $('svbar').hidden = !S.sv; $('frame').classList.toggle('sv', S.sv);
+  $('bSv').classList.toggle('on', S.sv); $('svbar').hidden = !S.sv; $('svmodes').hidden = !S.sv;
+  document.querySelectorAll('#svmodes button').forEach((b, i) => b.classList.toggle('on', i === S.svMode)); $('frame').classList.toggle('sv', S.sv);
   const tz = $('trapzone'); tz.hidden = !S.trap;
   if (S.trap){ const z = trapRect(); tz.style.left = z[0]*100 + '%'; tz.style.top = z[1]*100 + '%'; tz.style.width = z[2]*100 + '%'; tz.style.height = z[3]*100 + '%'; }
   // значки активных режимов
@@ -1375,7 +1408,14 @@ frameEl.addEventListener('pointercancel', fEnd);
 /* Shadow Vision — кнопка в углу видоискателя */
 $('bSv').addEventListener('pointerdown', e => e.stopPropagation());
 $('bSv').onclick = () => { S.sv = !S.sv; svT = 0; saveS(); render();
-  if (S.sv) toast(`${S.svN} тональных зон. Красная штриховка — светлое без деталей`); };
+  if (S.sv) toast(SV_MODES[S.svMode].tip); };
+S.svMode = clamp(S.svMode | 0, 0, SV_MODES.length - 1);
+SV_MODES.forEach((m, i) => {
+  const b = document.createElement('button'); b.textContent = m.n;
+  b.addEventListener('pointerdown', e => e.stopPropagation());
+  b.onclick = () => { S.svMode = i; svT = 0; svBarT = 0; saveS(); render(); toast(m.tip); };
+  $('svmodes').appendChild(b);
+});
 
 /* Невидимка */
 let hintT;
