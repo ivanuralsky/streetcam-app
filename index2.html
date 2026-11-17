@@ -78,6 +78,11 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
   font:400 16px/1 var(--eng);letter-spacing:.05em;text-transform:uppercase;color:var(--paint);padding-top:3px}
 #svmodes #svAlpha{flex:0 0 50px}
 #svmodes button.on{background:var(--brass);border-color:var(--brass);color:#000}
+#learn{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#lsim{position:absolute;left:8px;top:54px;width:min(62%,230px);height:38px;border-radius:4px;background:rgba(20,19,18,.72);
+  border:1px solid rgba(240,237,229,.28);display:flex;align-items:center;gap:8px;padding:0 10px}
+#lsim span{font:400 16px/1 var(--eng);letter-spacing:.05em;color:#36d6e6;white-space:nowrap;padding-top:3px;min-width:74px}
+#lsim input{flex:1;min-width:0;accent-color:#36d6e6}
 #evscale{position:absolute;right:10px;top:18%;bottom:18%;width:26px;opacity:0;transition:opacity .25s;pointer-events:none}
 #evscale.show{opacity:1}
 #evscale::before{content:"";position:absolute;right:4px;top:0;bottom:0;width:2px;background:rgba(240,237,229,.55);
@@ -206,6 +211,8 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
         <div id="level" hidden></div>
         <div id="trapzone" hidden><span>ловушка</span></div>
       </div>
+      <canvas id="learn"></canvas>
+      <div id="lsim" hidden><span id="lsimv">похожие 75%</span><input id="lsimr" type="range" min="50" max="95" step="5" aria-label="Сила похожести"></div>
       <canvas id="histo" width="84" height="36" hidden></canvas>
       <div class="ov" id="flash"></div>
       <div id="evscale"><div id="evmark"></div></div>
@@ -323,7 +330,7 @@ const ZONES = [{n:'Авто'},{n:'1.2 м',d:1.2},{n:'2 м',d:2},{n:'3 м',d:3},{
 
 /* ---------- Настройки ---------- */
 const DEF = {look:'trix', ev:0, grid:1, aspect:'3:2', tap:false, lensId:null, z:1, tele:2, shutter:0, lxMode:'nd', multi:0,
-  rf:false, shift:false, sv:false, svN:5, svMode:0, svA:0, autorot:true, level:0, zebra:false, histo:false, trap:0, interval:0, filter:0, zone:0, ghostly:false, presets:[null,null,null]};
+  rf:false, shift:false, sv:false, svN:5, svMode:0, svA:0, learn:false, lSym:true, lRhy:true, lSim:true, lThr:75, autorot:true, level:0, zebra:false, histo:false, trap:0, interval:0, filter:0, zone:0, ghostly:false, presets:[null,null,null]};
 let S = {...DEF};
 try { Object.assign(S, JSON.parse(localStorage.getItem('streetcam') || '{}')); } catch(e){}
 S.grid = +S.grid || 0; S.z = +S.z || 1; delete S['zoom'];
@@ -699,6 +706,358 @@ function drawPreview(){
   }
 }
 
+/* ---------- Режим обучения: анализ сцены (чистые функции, без DOM) ---------- */
+function lrnFromPixels(px, w, h){
+  const n = w * h, L0 = new Float32Array(n), T = new Float32Array(n), L = new Float32Array(n);
+  for (let i = 0; i < n; i++) L0[i] = px[i*4] * .299 + px[i*4+1] * .587 + px[i*4+2] * .114;
+  // размытие 3×3 — убирает шум сенсора и мелкую фактуру
+  for (let y = 0; y < h; y++){ const o = y * w; for (let x = 0; x < w; x++) T[o+x] = (L0[o + Math.max(0, x-1)] + 2 * L0[o+x] + L0[o + Math.min(w-1, x+1)]) / 4; }
+  for (let y = 0; y < h; y++){ const u = Math.max(0, y-1) * w, m = y * w, d = Math.min(h-1, y+1) * w; for (let x = 0; x < w; x++) L[m+x] = (T[u+x] + 2 * T[m+x] + T[d+x]) / 4; }
+  const Gx = new Float32Array(n), Gy = new Float32Array(n), E = new Float32Array(n);
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++){
+    const i = y * w + x;
+    const gx = (L[i-w+1] + 2*L[i+1] + L[i+w+1]) - (L[i-w-1] + 2*L[i-1] + L[i+w-1]);
+    const gy = (L[i+w-1] + 2*L[i+w] + L[i+w+1]) - (L[i-w-1] + 2*L[i-w] + L[i-w+1]);
+    Gx[i] = Math.abs(gx); Gy[i] = Math.abs(gy); E[i] = Math.hypot(gx, gy);
+  }
+  let s = 0, sx = 0, sy = 0; for (let i = 0; i < n; i++){ s += E[i]; sx += Gx[i]; sy += Gy[i]; }
+  return {w, h, L, Gx, Gy, E, Em: s / n + 1e-3, Gxm: sx / n + 1e-3, Gym: sy / n + 1e-3};
+}
+function lrnTp(A, w, h){ const B = new Float32Array(w * h); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) B[x*h + y] = A[y*w + x]; return B; }
+
+/* Симметрия относительно вертикальной оси: сравниваем контуры слева и справа от оси.
+   Перебираются ось, полуширина и участок по высоте; выбирается самый симметричный. */
+function symFind(G0, L, w, h, Gm){
+  const n = w * h, E = new Float32Array(n), Ed = new Float32Array(n), fl = .8 * Gm;
+  let em = 0;
+  for (let i = 0; i < n; i++){ E[i] = Math.max(0, G0[i] - fl); em += E[i]; }           // шумовой порог: ровные места не участвуют
+  em = em / n + 1e-3;
+  for (let y = 0; y < h; y++){ const o = y * w; for (let x = 0; x < w; x++) Ed[o+x] = Math.max(E[o + Math.max(0, x-1)], E[o+x], E[o + Math.min(w-1, x+1)]); }
+  const Ws = [.12, .2, .3, .46].map(f => Math.max(4, Math.round(w * f))), maxW = Ws[3];
+  const PN = Ws.map(() => new Float32Array(h + 1)), PD = Ws.map(() => new Float32Array(h + 1)), PL = Ws.map(() => new Float32Array(h + 1));
+  const lens = [1, .7, .5, .35].map(f => Math.max(6, Math.round(h * f))), st = Math.max(1, Math.round(h / 20));
+  const axk = [0,1,2,3].map(() => new Float32Array(w).fill(-1)), bk = [null, null, null, null];
+  for (let a = Ws[0]; a < w - Ws[0]; a++){
+    const lim = Math.min(a, w - 1 - a);
+    let kmax = 0; while (kmax < 4 && Ws[kmax] <= lim) kmax++;
+    for (let y = 0; y < h; y++){
+      const o = y * w; let N = 0, D = 0, Ld = 0, k = 0;
+      for (let d = 1; k < kmax; d++){
+        const i1 = o + a - d, i2 = o + a + d, e1 = E[i1], e2 = E[i2];
+        // сравнение с допуском в 1 пиксель: ось редко попадает точно в пиксель
+        N += Math.min(e1, Ed[i2]) + Math.min(e2, Ed[i1]); D += e1 + e2;
+        Ld += Math.abs(L[i1] - L[i2]);
+        if (d === Ws[k]){ PN[k][y+1] = PN[k][y] + N; PD[k][y+1] = PD[k][y] + D; PL[k][y+1] = PL[k][y] + Ld / d; k++; }
+      }
+    }
+    for (let k = 0; k < kmax; k++){
+      const W = Ws[k];
+      for (const len of lens) for (let y0 = 0; y0 + len <= h; y0 += st){
+        const y1 = y0 + len, N = PN[k][y1] - PN[k][y0], D = PD[k][y1] - PD[k][y0];
+        if (D < 1.6 * em * len * W) continue;                       // мало деталей — сравнивать нечего
+        const J = N / D, lum = Math.max(0, 1 - (PL[k][y1] - PL[k][y0]) / len / 40);
+        const sc = J * (.65 + .35 * lum) - .12 * (1 - len / h) - .2 * (1 - W / maxW);
+        if (sc > axk[k][a]) axk[k][a] = sc;
+        if (!bk[k] || sc > bk[k].sc) bk[k] = {a, W, y0, y1, J, lum, sc};
+      }
+    }
+  }
+  // Ось должна выделяться среди соседних при той же ширине области: у решётки или ряда окон
+  // симметричных осей много — это ритм, а не симметрия
+  let best = null;
+  for (let k = 0; k < 4; k++){
+    const b = bk[k]; if (!b) continue;
+    // сравнение с осями той же ширины; у самой широкой области осей мало — тогда с соседней шириной
+    let kk = k, other = 0;
+    for (;;){
+      let cnt = 0; other = 0;
+      for (let a = 0; a < w; a++) if (axk[kk][a] > -1 && Math.abs(a - b.a) > Math.max(3, b.W * .5)){ cnt++; other = Math.max(other, axk[kk][a]); }
+      if (cnt >= 10 || kk === 0) break; kk--;
+    }
+    b.dist = b.sc - other; b.rank = b.sc + b.dist;
+    if (!best || b.rank > best.rank) best = b;
+  }
+  if (best) best.E = E;
+  return best;
+}
+
+/* Ритм вдоль x: в горизонтальных полосах ищем цепочки контуров, повторяющихся через равный
+   (или плавно меняющийся из-за перспективы) шаг, и проверяем, что сами элементы похожи */
+function rhyFind(G, w, h){
+  const bh = Math.max(8, Math.round(h / 4)), step = Math.max(4, Math.round(h / 8)), found = [];
+  for (let b0 = 0; b0 + bh <= h; b0 += step){
+    const P = new Float32Array(w), S = new Float32Array(w), B = new Float32Array(w);
+    for (let y = b0; y < b0 + bh; y++){ const o = y * w; for (let x = 0; x < w; x++) P[x] += G[o+x]; }
+    for (let x = 0; x < w; x++) S[x] = (P[Math.max(0, x-1)] + 2 * P[x] + P[Math.min(w-1, x+1)]) / 4;
+    let acc = 0; const r = 10;
+    for (let x = 0; x < w; x++){ let s = 0, c = 0; for (let k = Math.max(0, x-r); k <= Math.min(w-1, x+r); k++){ s += S[k]; c++; } B[x] = s / c; }
+    let sd = 0; for (let x = 0; x < w; x++) sd += (S[x] - B[x]) ** 2; sd = Math.sqrt(sd / w) + 1e-3;
+    const pk = [];
+    for (let x = 2; x < w - 2; x++){ const v = S[x]; if (v > S[x-1] && v >= S[x+1] && v >= S[x-2] && v >= S[x+2] && v - B[x] > .6 * sd) pk.push(x); }
+    const n = pk.length; if (n < 4) continue;
+    // самая длинная цепочка с ровным шагом: состояние — последняя пара пиков
+    const len = new Int16Array(n * n), prev = new Int16Array(n * n).fill(-1);
+    let bi = -1, bj = -1, bl = 0;
+    for (let i = 1; i < n; i++) for (let j = 0; j < i; j++){
+      const g = pk[i] - pk[j]; if (g < 4 || g > w / 3) continue;
+      let l = 2, pv = -1;
+      for (let k = 0; k < j; k++){
+        const lk = len[k*n + j]; if (!lk) continue;
+        const q = g / (pk[j] - pk[k]); if (q < .78 || q > 1.28) continue;
+        if (lk + 1 > l){ l = lk + 1; pv = k; }
+      }
+      len[j*n + i] = l; prev[j*n + i] = pv;
+      if (l > bl){ bl = l; bi = i; bj = j; }
+    }
+    if (bl < 5) continue;                                         // ритм — от пяти повторов
+    const xs = [pk[bi], pk[bj]]; { let i = bi, j = bj; while (prev[j*n + i] >= 0){ const k = prev[j*n + i]; xs.push(pk[k]); i = j; j = k; } }
+    xs.reverse();
+    const gaps = xs.slice(1).map((x, i) => x - xs[i]), gm = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+    const cv = Math.sqrt(gaps.reduce((a, g) => a + (g - gm) ** 2, 0) / gaps.length) / gm;
+    let up = 0, dn = 0; for (let i = 1; i < gaps.length; i++){ if (gaps[i] > gaps[i-1]) up++; else if (gaps[i] < gaps[i-1]) dn++; }
+    const persp = (up === 0 || dn === 0) && cv < .35;              // перспектива: шаг плавно растёт или убывает
+    if (cv > .16 && !persp) continue;
+    const hs = xs.map(x => S[x] - B[x]); if (Math.min(...hs) < .3 * Math.max(...hs)) continue;
+    // сами элементы похожи: сравниваем профиль контура по высоте у соседних элементов
+    const prof = x => { const v = new Float32Array(bh); for (let y = 0; y < bh; y++){ const o = (b0 + y) * w; v[y] = G[o + x - 1] + G[o + x] + G[o + Math.min(w-1, x + 1)]; } return v; };
+    const pr = xs.map(prof); let cs = 0;
+    for (let i = 1; i < pr.length; i++){
+      const a = pr[i-1], b = pr[i]; let ma = 0, mb = 0; for (let y = 0; y < bh; y++){ ma += a[y]; mb += b[y]; } ma /= bh; mb /= bh;
+      let sab = 0, saa = 0, sbb = 0; for (let y = 0; y < bh; y++){ const u = a[y] - ma, v = b[y] - mb; sab += u * v; saa += u * u; sbb += v * v; }
+      cs += sab / Math.sqrt(saa * sbb + 1e-6);
+    }
+    cs /= pr.length - 1;
+    if (cs < .45) continue;
+    found.push({pos:xs, a0:b0, a1:b0 + bh, gap:gm, cv, cs, sc:xs.length * (.5 + cs)});
+  }
+  // соседние полосы с той же цепочкой — один ритм
+  found.sort((p, q) => q.sc - p.sc);
+  const out = [];
+  for (const f of found){
+    const x0 = f.pos[0], x1 = f.pos[f.pos.length - 1];
+    const m = out.find(o => { const ox0 = o.pos[0], ox1 = o.pos[o.pos.length - 1], ov = Math.min(x1, ox1) - Math.max(x0, ox0);
+      return ov > .3 * Math.min(x1 - x0, ox1 - ox0) && Math.abs(o.gap - f.gap) < .25 * o.gap && f.a0 <= o.a1 + 2 && f.a1 >= o.a0 - 2; });
+    if (m){ m.a0 = Math.min(m.a0, f.a0); m.a1 = Math.max(m.a1, f.a1); }
+    else if (out.length < 3) out.push({...f});
+  }
+  return out;
+}
+
+/* Похожие формы: силуэты — тёмные пятна на светлом и светлые на тёмном — сравниваются по форме,
+   независимо от размера и зеркального поворота */
+const SG = 8;
+function simFind(L, w, h, thr){
+  const n = w * h, hist = new Float32Array(64);
+  for (let i = 0; i < n; i++) hist[Math.min(63, L[i] / 4 | 0)]++;
+  let sum = 0; for (let i = 0; i < 64; i++) sum += i * hist[i];
+  let wB = 0, sB = 0, best = -1, th = 32;
+  for (let i = 0; i < 64; i++){ wB += hist[i]; if (!wB) continue; const wF = n - wB; if (!wF) break; sB += i * hist[i];
+    const d = sB / wB - (sum - sB) / wF, v = wB * wF * d * d; if (v > best){ best = v; th = i + .5; } }
+  const t = th * 4, lab = new Int32Array(n).fill(-1), stack = new Int32Array(n), blobs = [];
+  const minA = Math.max(40, n * .003), maxA = n * .2;
+  for (const dark of [true, false]){
+    const inM = i => dark ? L[i] < t - 6 : L[i] > t + 6;
+    for (let s0 = 0; s0 < n; s0++){
+      if (lab[s0] >= 0 || !inM(s0)) continue;
+      const id = blobs.length + 100000 * (dark ? 0 : 1); let sp = 0, cnt = 0; stack[sp++] = s0; lab[s0] = id;
+      const pix = [];
+      let x0 = w, y0 = h, x1 = 0, y1 = 0;
+      while (sp){
+        const i = stack[--sp], x = i % w, y = (i - x) / w; pix.push(i); cnt++;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        if (x > 0 && lab[i-1] < 0 && inM(i-1)){ lab[i-1] = id; stack[sp++] = i-1; }
+        if (x < w-1 && lab[i+1] < 0 && inM(i+1)){ lab[i+1] = id; stack[sp++] = i+1; }
+        if (y > 0 && lab[i-w] < 0 && inM(i-w)){ lab[i-w] = id; stack[sp++] = i-w; }
+        if (y < h-1 && lab[i+w] < 0 && inM(i+w)){ lab[i+w] = id; stack[sp++] = i+w; }
+      }
+      const bw = x1 - x0 + 1, bh = y1 - y0 + 1, fill = cnt / (bw * bh);
+      const sides = (x0 === 0) + (x1 === w-1) + (y0 === 0) + (y1 === h-1);
+      if (cnt < minA || cnt > maxA || bw < 4 || bh < 4 || sides > 1 || bw > .85 * w || bh > .85 * h || fill > .88) continue;
+      const G = new Float32Array(SG * SG); let cx = 0, cy = 0;
+      for (const i of pix){ const x = i % w, y = (i - x) / w; cx += x; cy += y;
+        G[Math.min(SG-1, (y - y0) * SG / bh | 0) * SG + Math.min(SG-1, (x - x0) * SG / bw | 0)]++; }
+      const cell = bw * bh / (SG * SG); for (let k = 0; k < G.length; k++) G[k] = Math.min(1, G[k] / cell);
+      blobs.push({pix, x0, y0, x1, y1, cx:cx / cnt, cy:cy / cnt, area:cnt, asp:Math.log(bh / bw), fill, G});
+    }
+  }
+  blobs.sort((a, b) => b.area - a.area); blobs.length = Math.min(blobs.length, 24);
+  const pairs = [];
+  for (let i = 0; i < blobs.length; i++) for (let j = i + 1; j < blobs.length; j++){
+    const s = shapeSim(blobs[i], blobs[j]); if (s >= thr) pairs.push({i, j, s});
+  }
+  // группы похожих: объединение по парам
+  const par = blobs.map((_, i) => i), f = i => par[i] === i ? i : (par[i] = f(par[i]));
+  for (const p of pairs) par[f(p.i)] = f(p.j);
+  const gm = new Map(); pairs.forEach(p => { const r = f(p.i); if (!gm.has(r)) gm.set(r, {m:new Set(), best:0}); const g = gm.get(r); g.m.add(p.i); g.m.add(p.j); g.best = Math.max(g.best, p.s); });
+  const groups = [...gm.values()].sort((a, b) => b.best - a.best).slice(0, 3).map(g => {
+    const m = [...g.m].sort((a, b) => blobs[a].cx - blobs[b].cx).slice(0, 6);
+    const links = []; for (let k = 1; k < m.length; k++) links.push({i:m[k-1], j:m[k], s:shapeSim(blobs[m[k-1]], blobs[m[k]])});
+    return {m, links, best:g.best};
+  });
+  return {blobs, groups};
+}
+function shapeSim(a, b){
+  let d = 0, dm = 0;
+  for (let y = 0; y < SG; y++) for (let x = 0; x < SG; x++){ const v = a.G[y*SG + x]; d += Math.abs(v - b.G[y*SG + x]); dm += Math.abs(v - b.G[y*SG + SG-1-x]); }
+  const dist = Math.min(d, dm) / (SG * SG) + .35 * Math.abs(a.asp - b.asp) + .3 * Math.abs(a.fill - b.fill);
+  return Math.max(0, Math.min(1, 1 - dist * 1.2));
+}
+const SYM_T = .55, SYM_D = .2;
+function lrnRaw(R, opt){
+  const {w, h, L, Gx, Gy, E, Em} = R, out = {};
+  if (opt.sym){
+    const v = symFind(Gx, L, w, h, R.Gxm), hz = symFind(lrnTp(Gy, w, h), lrnTp(L, w, h), h, w, R.Gym);
+    out.symV = v; out.symH = hz;
+    const ok = b => b && b.sc >= SYM_T && b.dist >= SYM_D;
+    // горизонтальная ось (отражения) — только для крупной области: мелкие «симметрии» по горизонтали почти всегда случайны
+    out.sym = [ok(v) && {...v, dir:'v'}, ok(hz) && hz.W >= .2 * h && {...hz, dir:'h'}].filter(Boolean);
+  }
+  if (opt.rhy){
+    out.rhy = rhyFind(Gx, w, h).map(r => ({...r, dir:'h'}))
+      .concat(rhyFind(lrnTp(Gy, w, h), h, w).map(r => ({...r, dir:'v'})))
+      .sort((a, b) => b.sc - a.sc)
+      .filter((q, i, all) => !all.slice(0, i).some(o => o.dir === q.dir && Math.min(o.a1, q.a1) > Math.max(o.a0, q.a0) &&
+        Math.min(o.pos[o.pos.length-1], q.pos[q.pos.length-1]) > Math.max(o.pos[0], q.pos[0])))
+      .slice(0, 2);
+  }
+  if (opt.sim) out.sim = simFind(L, w, h, opt.thr);
+  return out;
+}
+
+/* Анализ идёт по тому, что видно в видоискателе (с учётом плёнки, шифта и поворота), ~5 раз в секунду.
+   Цвета: фиолетовый — симметрия, розовый — ритм, бирюзовый — похожие формы */
+const LC = {sym:[164,92,255], rhy:[255,79,163], sim:[54,214,230]};
+const lrnCan = document.createElement('canvas'), lrnCx = lrnCan.getContext('2d', {willReadFrequently:true});
+const lrnPx = document.createElement('canvas'), lrnPxCx = lrnPx.getContext('2d');
+let lrnLast = 0;
+const lrnHold = {sym:{show:null, hit:0, miss:9}, rhy:{show:null, hit:0, miss:9}, sim:{show:null, hit:0, miss:9}};
+function lrnReset(){ for (const k in lrnHold) lrnHold[k] = {show:null, hit:0, miss:9}; const c = $('learn'); c.getContext('2d').clearRect(0, 0, c.width, c.height); lrnLast = 0; }
+// Подсветка появляется, когда находка держится два анализа подряд, и гаснет после двух промахов — без мигания
+function lrnKeep(k, cur){
+  const H = lrnHold[k];
+  if (cur){ H.hit++; H.miss = 0; if (H.hit >= 2 || H.show) H.show = cur; }
+  else { H.hit = 0; if (++H.miss >= 2) H.show = null; }
+  return H.show;
+}
+function learnTick(now){
+  lrnLast = now;
+  let R;
+  try {
+    let src = video, sx = 0, sy = 0, sw = video.videoWidth, sh = video.videoHeight;
+    // при Shadow Vision в видоискателе пятна — анализируем исходное видео того же участка
+    if (pvOn && !S.sv){ src = pvc; sw = pvc.width; sh = pvc.height; }
+    else if (!rfOn()){ const cr = cropRect(); sx = sw * cr[0]; sy = sh * cr[1]; sw *= cr[2]; sh *= cr[3]; }
+    const k = 160 / Math.max(sw, sh), w = Math.max(24, Math.round(sw * k)), h = Math.max(24, Math.round(sh * k));
+    if (lrnCan.width !== w || lrnCan.height !== h){ lrnCan.width = w; lrnCan.height = h; }
+    lrnCx.drawImage(src, sx, sy, sw, sh, 0, 0, w, h);
+    R = lrnFromPixels(lrnCx.getImageData(0, 0, w, h).data, w, h);
+    let mx = 0; for (let i = 0; i < R.L.length; i += 7) if (R.L[i] > mx) mx = R.L[i];
+    if (mx < 3) return;                                        // кадр ещё не готов — пропустить
+  } catch(e){ return; }
+  const r = lrnRaw(R, {sym:S.lSym, rhy:S.lRhy, sim:S.lSim, thr:S.lThr / 100});
+  const res = {
+    sym: S.lSym ? lrnKeep('sym', r.sym.length ? r.sym : null) : null,
+    rhy: S.lRhy ? lrnKeep('rhy', r.rhy.length ? r.rhy : null) : null,
+    sim: S.lSim ? lrnKeep('sim', r.sim.groups.length ? r.sim : null) : null,
+  };
+  lrnDraw(R, res);
+}
+function lrnDraw(R, res){
+  const {w, h} = R, c = $('learn'), fr = $('frame').getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
+  const CW = Math.max(2, Math.round(fr.width * dpr)), CH = Math.max(2, Math.round(fr.height * dpr));
+  if (c.width !== CW || c.height !== CH){ c.width = CW; c.height = CH; }
+  const x = c.getContext('2d'); x.clearRect(0, 0, CW, CH);
+  const sx = CW / w, sy = CH / h, img = new ImageData(w, h), d = img.data;
+  const mark = (i, col, a) => { const o = i * 4; if (d[o+3] >= a) return; d[o] = col[0]; d[o+1] = col[1]; d[o+2] = col[2]; d[o+3] = a; };
+  const rgba = (col, a) => `rgba(${col[0]},${col[1]},${col[2]},${a})`;
+  const boxes = [];
+  const label = (t, col, px, py, al) => {
+    x.font = `${Math.round(15 * dpr)}px ${getComputedStyle(document.body).getPropertyValue('--eng')}`;
+    const tw = x.measureText(t.toUpperCase()).width, lh = 17 * dpr;
+    let x0 = al === 'right' ? px - tw : al === 'center' ? px - tw / 2 : px;
+    x0 = Math.max(4 * dpr, Math.min(CW - tw - 4 * dpr, x0)); px = al === 'right' ? x0 + tw : al === 'center' ? x0 + tw / 2 : x0;
+    py = Math.max(lh / 2, Math.min(CH - lh / 2, py));
+    for (let k = 0; k < 8 && boxes.some(b => x0 < b[2] && x0 + tw > b[0] && py - lh / 2 < b[3] && py + lh / 2 > b[1]); k++) py += lh;
+    boxes.push([x0, py - lh / 2, x0 + tw, py + lh / 2]);
+    x.font = `${Math.round(15 * dpr)}px ${getComputedStyle(document.body).getPropertyValue('--eng')}`; x.textAlign = al || 'left'; x.textBaseline = 'middle';
+    x.lineWidth = 3 * dpr; x.lineJoin = 'round'; x.strokeStyle = 'rgba(0,0,0,.65)'; x.strokeText(t.toUpperCase(), px, py); x.fillStyle = rgba(col, 1); x.fillText(t.toUpperCase(), px, py);
+  };
+  const vec = [];                                            // линии и подписи — поверх пиксельной подсветки
+  // Симметрия: совпавшие зеркальные контуры, область и ось
+  for (const s of res.sym || []){
+    const E = s.E, W = s.W, ww = s.dir === 'v' ? w : h, th = 1.2 * (s.dir === 'v' ? R.Gxm : R.Gym);
+    for (let t = s.y0; t < s.y1; t++) for (let dd = 1; dd <= W; dd++){
+      const i1 = t * ww + s.a - dd, i2 = t * ww + s.a + dd; if (!E || i2 >= E.length) continue;
+      const e1 = E[i1], e2 = E[i2], lo = Math.min(e1, e2);
+      if (lo > th && lo > .45 * Math.max(e1, e2)){
+        const p1 = s.dir === 'v' ? i1 : (s.a - dd) * w + t, p2 = s.dir === 'v' ? i2 : (s.a + dd) * w + t;
+        mark(p1, LC.sym, 190); mark(p2, LC.sym, 190);
+      }
+    }
+    vec.push(() => {
+      x.fillStyle = rgba(LC.sym, .12); x.strokeStyle = rgba(LC.sym, .95); x.lineWidth = 2 * dpr; x.setLineDash([]);
+      if (s.dir === 'v'){
+        const X = (s.a + .5) * sx; x.fillRect((s.a - W) * sx, s.y0 * sy, (2 * W + 1) * sx, (s.y1 - s.y0) * sy);
+        x.beginPath(); x.moveTo(X, s.y0 * sy); x.lineTo(X, s.y1 * sy); x.stroke(); label('симметрия', LC.sym, X + 6 * dpr, s.y0 * sy + 12 * dpr);
+      } else {
+        const Y = (s.a + .5) * sy; x.fillRect(s.y0 * sx, (s.a - W) * sy, (s.y1 - s.y0) * sx, (2 * W + 1) * sy);
+        x.beginPath(); x.moveTo(s.y0 * sx, Y); x.lineTo(s.y1 * sx, Y); x.stroke(); label('симметрия', LC.sym, s.y0 * sx + 6 * dpr, Y - 12 * dpr);
+      }
+    });
+  }
+  // Ритм: контуры повторяющихся элементов, метки на каждом элементе и скобка с числом повторов
+  for (const q of res.rhy || []){
+    const G = q.dir === 'h' ? R.Gx : R.Gy, gm = q.dir === 'h' ? R.Gxm : R.Gym, p0 = q.pos[0], p1 = q.pos[q.pos.length - 1], hg = q.gap * .5;
+    for (let a = q.a0; a < q.a1; a++) for (let p = Math.max(0, Math.round(p0 - 2)); p <= Math.min((q.dir === 'h' ? w : h) - 1, Math.round(p1 + 2)); p++){
+      const i = q.dir === 'h' ? a * w + p : p * w + a;
+      if (G[i] > 1.6 * gm && q.pos.some(e => Math.abs(e - p) <= Math.max(2, hg * .45))) mark(i, LC.rhy, 170);
+    }
+    // где по высоте (или ширине) элементы действительно есть
+    let e0 = q.a1, e1 = q.a0;
+    for (const e of q.pos) for (let a = q.a0; a < q.a1; a++){
+      let v = 0; for (let k = -1; k <= 1; k++){ const p = Math.max(0, Math.min((q.dir === 'h' ? w : h) - 1, e + k)); v = Math.max(v, G[q.dir === 'h' ? a * w + p : p * w + a]); }
+      if (v > 1.6 * gm){ if (a < e0) e0 = a; if (a + 1 > e1) e1 = a + 1; }
+    }
+    if (e1 <= e0){ e0 = q.a0; e1 = q.a1; }
+    vec.push(() => {
+      x.strokeStyle = rgba(LC.rhy, .9); x.lineWidth = 2 * dpr; x.setLineDash([]);
+      if (q.dir === 'h'){
+        const yb = Math.min(CH - 8 * dpr, e1 * sy + 5 * dpr);
+        x.beginPath(); for (const e of q.pos){ const X = (e + .5) * sx; x.moveTo(X, e0 * sy); x.lineTo(X, e1 * sy); } x.globalAlpha = .45; x.stroke(); x.globalAlpha = 1;
+        x.beginPath(); x.moveTo((p0 + .5) * sx, yb); x.lineTo((p1 + .5) * sx, yb); for (const e of q.pos){ x.moveTo((e + .5) * sx, yb - 5 * dpr); x.lineTo((e + .5) * sx, yb + 5 * dpr); } x.stroke();
+        label(`ритм ×${q.pos.length}`, LC.rhy, (p0 + .5) * sx, yb + 13 * dpr > CH - 26 * dpr ? e0 * sy - 12 * dpr : yb + 13 * dpr);   // у нижнего края — над элементами
+      } else {
+        const xb = Math.min(CW - 8 * dpr, e1 * sx + 5 * dpr);
+        x.beginPath(); for (const e of q.pos){ const Y = (e + .5) * sy; x.moveTo(e0 * sx, Y); x.lineTo(e1 * sx, Y); } x.globalAlpha = .45; x.stroke(); x.globalAlpha = 1;
+        x.beginPath(); x.moveTo(xb, (p0 + .5) * sy); x.lineTo(xb, (p1 + .5) * sy); for (const e of q.pos){ x.moveTo(xb - 5 * dpr, (e + .5) * sy); x.lineTo(xb + 5 * dpr, (e + .5) * sy); } x.stroke();
+        label(`ритм ×${q.pos.length}`, LC.rhy, xb - 6 * dpr, (p0 + .5) * sy - 12 * dpr, 'right');
+      }
+    });
+  }
+  // Похожие формы: контуры силуэтов и связки с процентом похожести
+  if (res.sim){
+    const {blobs, groups} = res.sim, own = new Int16Array(w * h).fill(-1);
+    for (const g of groups) for (const m of g.m) for (const i of blobs[m].pix) own[i] = m;
+    for (const g of groups) for (const m of g.m) for (const i of blobs[m].pix){
+      const px = i % w, py = (i - px) / w;
+      if (px === 0 || py === 0 || px === w - 1 || py === h - 1 || own[i-1] !== m || own[i+1] !== m || own[i-w] !== m || own[i+w] !== m) mark(i, LC.sim, 235);
+      else mark(i, LC.sim, 45);
+    }
+    vec.push(() => {
+      x.strokeStyle = rgba(LC.sim, .9); x.lineWidth = 1.5 * dpr; x.setLineDash([6 * dpr, 5 * dpr]);
+      for (const g of groups) for (const l of g.links){
+        const a = blobs[l.i], b = blobs[l.j], ax = (a.cx + .5) * sx, ay = (a.cy + .5) * sy, bx = (b.cx + .5) * sx, by = (b.cy + .5) * sy;
+        x.beginPath(); x.moveTo(ax, ay); x.lineTo(bx, by); x.stroke();
+        label(Math.round(l.s * 100) + '%', LC.sim, (ax + bx) / 2, (ay + by) / 2 - 11 * dpr, 'center');
+      }
+      x.setLineDash([]);
+    });
+  }
+  lrnPx.width = w; lrnPx.height = h; lrnPxCx.putImageData(img, 0, 0);
+  x.imageSmoothingEnabled = true; x.globalAlpha = .9; x.drawImage(lrnPx, 0, 0, CW, CH); x.globalAlpha = 1;   // мягкое свечение
+  vec.forEach(f => f());
+}
+
 /* ---------- Анализ кадра: гистограмма и ловушка ---------- */
 const AW = 64, AH = 48, anc = document.createElement('canvas'); anc.width = AW; anc.height = AH;
 const anx = anc.getContext('2d', {willReadFrequently:true});
@@ -751,6 +1110,7 @@ let lastLoop = 0;
 function frameLoop(){
   const now = performance.now(); lastLoop = now;
   drawPreview();
+  if (S.learn && now - lrnLast > 200 && video.videoWidth && $('stealth').hidden) learnTick(now);   // сразу после отрисовки, пока кадр в буфере
   if ((S.histo || S.trap) && now - lastAn > 110 && video.videoWidth) analyze(now);
   if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(frameLoop); else requestAnimationFrame(frameLoop);
 }
@@ -1209,6 +1569,7 @@ function render(){
   $('grid').innerHTML = GRID_SVG[S.grid] || '';
   $('level').hidden = S.level !== 1;
   $('histo').hidden = !S.histo;
+  $('lsim').hidden = !(S.learn && S.lSim); $('lsimr').value = S.lThr; $('lsimv').textContent = `похожие ${S.lThr}%`;
   $('shiftread').hidden = !isBack(); $('shiftread').classList.toggle('on', S.shift);
   if (!S.shift){ $('shiftread').textContent = 'шифт'; $('shiftread').classList.remove('lim'); }
   $('bSv').classList.toggle('on', S.sv); $('svbar').hidden = !S.sv; $('svmodes').hidden = !S.sv;
@@ -1220,6 +1581,7 @@ function render(){
   const bd = [];
   if (multi) bd.push(`<span class="hot">мульти ${multi.k}/${multi.n}</span>`); else if (MULTIS[S.multi]) bd.push(`мульти ×${MULTIS[S.multi]}`);
   else if (S.shutter) bd.push(SHUTTERS[S.shutter].n + (S.lxMode === 'trail' ? ' шлейф' : ' ND'));
+  if (S.learn) bd.push('обучение');
   if (S.interval) bd.push(`<span class="${ivT ? 'hot' : ''}">инт ${INTERVALS[S.interval]} с</span>`);
   if (S.trap) bd.push('<span class="hot">ловушка</span>');
   if (L.bw && S.filter) bd.push(FILTERS[S.filter].n);
@@ -1309,6 +1671,14 @@ const TILES = [
     {n:'Зона фокуса', v:() => zoneOk() ? ZONES[S.zone].n : 'Нет', on:() => S.zone > 0 && zoneOk(), off:() => !zoneOk(), tap:() => {
       if (!zoneOk()) return toast('Этот браузер не даёт управлять фокусом');
       S.zone = (S.zone + 1) % ZONES.length; applyZone(); }},
+  ]],
+  ['Обучение', [
+    {n:'Режим обучения', v:() => S.learn ? 'Да' : 'Нет', on:() => S.learn, tap:() => {
+      S.learn = !S.learn; lrnReset();
+      if (S.learn) toast('Фиолетовый — симметрия, розовый — ритм, бирюзовый — похожие формы'); }},
+    {n:'Симметрия', v:() => S.lSym ? 'Да' : 'Нет', on:() => S.learn && S.lSym, off:() => !S.learn, tap:() => { S.lSym = !S.lSym; lrnReset(); }},
+    {n:'Ритм', v:() => S.lRhy ? 'Да' : 'Нет', on:() => S.learn && S.lRhy, off:() => !S.learn, tap:() => { S.lRhy = !S.lRhy; lrnReset(); }},
+    {n:'Похожие формы', v:() => S.lSim ? 'Да' : 'Нет', on:() => S.learn && S.lSim, off:() => !S.learn, tap:() => { S.lSim = !S.lSim; lrnReset(); }},
   ]],
   ['Съёмка', [
     {n:'Спуск касанием кадра', v:() => S.tap ? 'Да' : 'Нет', on:() => S.tap, tap:() => { S.tap = !S.tap; if (S.tap) toast('Жесты в видоискателе отключены: любое касание — снимок'); }},
@@ -1426,6 +1796,11 @@ const fEnd = e => {
 };
 frameEl.addEventListener('pointerup', fEnd);
 frameEl.addEventListener('pointercancel', fEnd);
+
+/* Ползунок силы похожести — в видоискателе, чтобы подстраивать, глядя на кадр */
+$('lsim').addEventListener('pointerdown', e => e.stopPropagation());
+$('lsimr').addEventListener('input', () => { S.lThr = +$('lsimr').value; $('lsimv').textContent = `похожие ${S.lThr}%`; lrnLast = 0; });
+$('lsimr').addEventListener('change', saveS);
 
 /* Шифт — кнопка в левом верхнем углу видоискателя */
 async function toggleShift(){
