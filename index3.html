@@ -1176,6 +1176,261 @@ function scalesFind(R){
   return {a:{x:A.cx, y:A.cy}, b:{x:B.cx, y:B.cy}};
 }
 
+/* ---------- Ритм по экземплярам (по ТЗ референс-пакета) ----------
+   1) экземпляры — пятна кадра (тёмные и светлые, на трёх уровнях тона), у каждого центр, размер, тон,
+      вытянутость и ориентация (по вторым моментам);
+   2) цепочки — от каждой пары похожих пятен цепочка растёт в обе стороны: следующий элемент ищется там,
+      где его предсказывает предыдущий шаг (шаг может плавно сжиматься — перспектива, и плавно поворачивать — дуга);
+      один пропуск допустим (выброс: открытая створка среди окон);
+   3) модель шага — равномерная или проективная s_i ≈ (a·i + b)/(c·i + 1); проективная берётся, только если
+      заметно лучше и размер элементов тоже меняется;
+   4) сетка — цепочки одного мотива с двумя непараллельными осями;
+   5) сила в кадре (composition_strength) отдельно от уверенности (confidence): мелкая плотная фактура
+      (кирпич, плитка) получает штраф и не показывается.
+   Угол оси: atan2(dy, dx) mod 180, y вниз; ориентация мотива — отдельно. Координаты групп — нормированные 0…1. */
+function rhyInstances(L, w, h){
+  const n = w * h, seg = lrnSegment(L, w, h, Math.max(5, n * .00035), n * .15), md = Math.min(w, h);
+  const out = [];
+  for (const b of seg.blobs){
+    const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
+    if (bw > .5 * w && bh > .5 * h && b.area / (bw * bh) > .35) continue;   // крупная плоскость, а не элемент; тонкая полоса через весь кадр — элемент
+    let sxx = 0, syy = 0, sxy = 0;
+    for (const i of b.pix){ const x = i % w, y = (i - x) / w, dx = x - b.cx, dy = y - b.cy; sxx += dx * dx; syy += dy * dy; sxy += dx * dy; }
+    sxx /= b.area; syy /= b.area; sxy /= b.area;
+    const tr = sxx + syy, df = Math.sqrt((sxx - syy) ** 2 + 4 * sxy * sxy), l1 = (tr + df) / 2, l2 = Math.max(.05, (tr - df) / 2);
+    const ori = ((.5 * Math.atan2(2 * sxy, sxx - syy)) * 180 / Math.PI + 180) % 180;
+    const contrast = Math.abs(b.meanL - b.thr);
+    if (contrast < 20) continue;                                   // почти растворившиеся элементы (размытие) — не считать
+    const touches = b.side.l + b.side.r + b.side.t + b.side.b;
+    out.push({b, x:b.cx, y:b.cy, size:Math.sqrt(b.area), area:b.area, elong:Math.sqrt(l1 / l2), ori, fill:b.area / (bw * bh),
+      tone:b.meanL, dark:b.dark, contrast, len:2 * Math.sqrt(l1), wid:2 * Math.sqrt(l2), touches, rel:Math.sqrt(b.area) / md});
+  }
+  out.sort((a, c) => c.area * c.contrast - a.area * a.contrast);
+  return out.slice(0, 70);
+}
+function extAlong(p, dx, dy){ const a = Math.atan2(dy, dx) - p.ori * Math.PI / 180; return Math.abs(p.len * Math.cos(a)) + Math.abs(p.wid * Math.sin(a)); }
+function angDiff(a, b){ const d = Math.abs(a - b) % 180; return Math.min(d, 180 - d); }
+// похожесть двух экземпляров: тон-полярность обязательна, дальше форма, вытянутость, ориентация, размер
+function instSim(a, c, scaleOk){
+  if (a.dark !== c.dark) return 0;
+  const sr = Math.min(a.size, c.size) / Math.max(a.size, c.size);
+  if (sr < (scaleOk ? .45 : .6)) return 0;
+  const el = Math.abs(Math.log(a.elong / c.elong)); if (el > .6) return 0;
+  const elongated = Math.min(a.elong, c.elong) > 1.6;
+  const od = elongated ? angDiff(a.ori, c.ori) : 0; if (od > 22) return 0;
+  const fd = Math.abs(a.fill - c.fill); if (fd > .3) return 0;
+  const td = Math.abs(a.tone - c.tone);
+  return Math.max(0, 1 - .35 * el / .6 - .25 * od / 22 - .2 * fd / .3 - .2 * Math.min(1, td / 90)) * (.6 + .4 * sr);
+}
+function rhyGrow(I, i0, j0){
+  const chain = [i0, j0], gaps = [];
+  for (const dirn of [1, -1]){
+    let gapUsed = false;
+    let stx = (I[j0].x - I[i0].x) * dirn, sty = (I[j0].y - I[i0].y) * dirn, rot = 0;
+    for (let guard = 0; guard < 30; guard++){
+      const b = dirn > 0 ? I[chain[chain.length - 1]] : I[chain[0]], prv = dirn > 0 ? I[chain[chain.length - 2]] : I[chain[1]];
+      const st = Math.hypot(stx, sty); if (st < 1) break;
+      const k = Math.max(.7, Math.min(1.3, b.size / prv.size));      // перспектива: шаг сжимается вместе с размером
+      let best = -1, bd = 1e9, bm = 1;
+      for (const mult of gapUsed ? [1] : [1, 2]){
+        const cr = Math.cos(rot * mult), sr = Math.sin(rot * mult), rx = stx * cr - sty * sr, ry = stx * sr + sty * cr;   // дуга: шаг продолжает поворачивать
+        const px = b.x + rx * k * mult, py = b.y + ry * k * mult, tol = .28 * st * k * mult;
+        for (let c = 0; c < I.length; c++){
+          if (chain.includes(c)) continue;
+          const C = I[c], d = Math.hypot(C.x - px, C.y - py); if (d > tol || d >= bd) continue;
+          const nx = C.x - b.x, ny = C.y - b.y, ns = Math.hypot(nx, ny) / mult;
+          if (ns / st < .55 || ns / st > 1.6) continue;
+          const turn = Math.acos(Math.max(-1, Math.min(1, (nx * stx + ny * sty) / (Math.hypot(nx, ny) * st)))) * 180 / Math.PI;
+          if (turn > 32) continue;
+          if (instSim(b, C, true) < .45 || instSim(I[i0], C, true) < .3) continue;
+          best = c; bd = d; bm = mult;
+        }
+        if (best >= 0) break;
+      }
+      if (best < 0) break;
+      const C = I[best];
+      if (bm === 2){ gapUsed = true; gaps.push({after:dirn > 0 ? chain[chain.length - 1] : chain[0], dirn}); }
+      const nx = (C.x - b.x) / bm, ny = (C.y - b.y) / bm; let dr = Math.atan2(ny, nx) - Math.atan2(sty, stx);
+      while (dr > Math.PI) dr -= 2 * Math.PI; while (dr < -Math.PI) dr += 2 * Math.PI;
+      rot = .6 * dr / bm; stx = nx; sty = ny;
+      if (dirn > 0) chain.push(best); else chain.unshift(best);
+    }
+  }
+  return {chain, gaps};
+}
+// подбор модели шага: равномерный против проективного
+function rhyFitSpacing(s, idx){
+  const n = s.length, lin = (X, Y) => { let mx = 0, my = 0; for (let i = 0; i < X.length; i++){ mx += X[i]; my += Y[i]; } mx /= X.length; my /= X.length;
+    let sxx = 0, sxy = 0; for (let i = 0; i < X.length; i++){ sxx += (X[i] - mx) ** 2; sxy += (X[i] - mx) * (Y[i] - my); } const a = sxy / (sxx || 1); return [a, my - a * mx]; };
+  const [a, b] = lin(idx, s); let eu = 0; for (let i = 0; i < n; i++) eu += (s[i] - (a * idx[i] + b)) ** 2; eu = Math.sqrt(eu / n);
+  let ep = eu;
+  if (n >= 4){
+    // s_i·(c·i + 1) = a·i + b  →  линейно по (a, b, c): s_i = a·i + b − c·i·s_i
+    const A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], y = [0, 0, 0];
+    for (let i = 0; i < n; i++){ const r = [idx[i], 1, -idx[i] * s[i]]; for (let p = 0; p < 3; p++){ y[p] += r[p] * s[i]; for (let q = 0; q < 3; q++) A[p][q] += r[p] * r[q]; } }
+    const det = m => m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1]) - m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0]) + m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+    const D = det(A);
+    if (Math.abs(D) > 1e-9){
+      const sol = [0, 1, 2].map(k => det(A.map((row, r) => row.map((v, c) => c === k ? y[r] : v))) / D);
+      let e = 0, ok = true;
+      for (let i = 0; i < n; i++){ const den = sol[2] * idx[i] + 1; if (den <= .05){ ok = false; break; } e += (s[i] - (sol[0] * idx[i] + sol[1]) / den) ** 2; }
+      if (ok) ep = Math.sqrt(e / n);
+    }
+  }
+  return {eu, ep};
+}
+function rhyGroups(R, minRep){
+  const {w, h, L} = R, I = rhyInstances(L, w, h), md = Math.min(w, h), n = I.length;
+  minRep = Math.max(3, minRep || 4);
+  // соседи-кандидаты для затравок
+  const cands = [];
+  for (let i = 0; i < n; i++){
+    const nb = [];
+    for (let j = 0; j < n; j++){
+      if (i === j) continue;
+      const d = Math.hypot(I[j].x - I[i].x, I[j].y - I[i].y), sz = Math.max(I[i].size, I[j].size);
+      const dx = I[j].x - I[i].x, dy = I[j].y - I[i].y;
+      // соседние элементы не должны перекрываться; у параллельных полос считаем зазор поперёк полосы
+      const par = I[i].elong > 2 && I[j].elong > 2 && angDiff(I[i].ori, I[j].ori) < 15;
+      const sep = par ? Math.abs(-dx * Math.sin(I[i].ori * Math.PI / 180) + dy * Math.cos(I[i].ori * Math.PI / 180)) / (.55 * (I[i].wid + I[j].wid))
+                      : d / (.55 * (extAlong(I[i], dx, dy) + extAlong(I[j], dx, dy)));
+      if (sep < 1 || d > .5 * Math.max(w, h)) continue;
+      const s = instSim(I[i], I[j], true); if (s >= .55) nb.push({j, d});
+    }
+    nb.sort((a, c) => a.d - c.d); for (const q of nb.slice(0, 5)) if (i < q.j) cands.push([i, q.j]);
+  }
+  const chains = [], seen = new Set();
+  for (const [i, j] of cands){
+    const g = rhyGrow(I, i, j);
+    const key = [...g.chain].sort((a, c) => a - c).join(',');
+    if (seen.has(key)) continue; seen.add(key);
+    const cnt = g.chain.length + g.gaps.length;
+    if (g.chain.length < 3) continue;
+    if (g.gaps.length && g.chain.length < 5) continue;               // выброс допустим только в длинном ряду
+    const P = g.chain.map(k => I[k]);
+    // ось — главное направление центров
+    let mx = 0, my = 0; for (const p of P){ mx += p.x; my += p.y; } mx /= P.length; my /= P.length;
+    let cxx = 0, cyy = 0, cxy = 0; for (const p of P){ cxx += (p.x - mx) ** 2; cyy += (p.y - my) ** 2; cxy += (p.x - mx) * (p.y - my); }
+    const th = .5 * Math.atan2(2 * cxy, cxx - cyy), ux = Math.cos(th), uy = Math.sin(th);
+    const s = P.map(p => (p.x - mx) * ux + (p.y - my) * uy), q = P.map(p => -(p.x - mx) * uy + (p.y - my) * ux);
+    if (s[s.length - 1] < s[0]) for (let k = 0; k < s.length; k++){ s[k] = -s[k]; q[k] = -q[k]; }
+    const span = Math.abs(s[s.length - 1] - s[0]) || 1;
+    const qrms = Math.sqrt(q.reduce((a, v) => a + v * v, 0) / q.length);
+    // поворот цепочки: сумма углов между соседними шагами
+    let turn = 0; for (let k = 2; k < P.length; k++){ const a1 = Math.atan2(P[k-1].y - P[k-2].y, P[k-1].x - P[k-2].x), a2 = Math.atan2(P[k].y - P[k-1].y, P[k].x - P[k-1].x); let dd = a2 - a1; while (dd > Math.PI) dd -= 2 * Math.PI; while (dd < -Math.PI) dd += 2 * Math.PI; turn += dd; }
+    const curved = Math.abs(turn) * 180 / Math.PI > 28 && qrms > .06 * span;
+    if (!curved && qrms > .12 * span) continue;                       // центры не на одной оси
+    // шаги вдоль цепочки (с учётом пропуска)
+    const idx = []; { let k = 0; for (let t = 0; t < g.chain.length; t++){ idx.push(k); k += g.gaps.some(G => G.after === g.chain[t] && G.dirn > 0) || (t + 1 < g.chain.length && g.gaps.some(G => G.after === g.chain[t + 1] && G.dirn < 0)) ? 2 : 1; } }
+    const path = []; let acc = 0; path.push(0); for (let k = 1; k < P.length; k++){ acc += Math.hypot(P[k].x - P[k-1].x, P[k].y - P[k-1].y); path.push(acc); }
+    const sv = curved ? path : s;
+    const d = []; for (let k = 1; k < sv.length; k++) d.push((sv[k] - sv[k-1]) / (idx[k] - idx[k-1]));
+    const dm = d.reduce((a, v) => a + v, 0) / d.length, cv = Math.sqrt(d.reduce((a, v) => a + (v - dm) ** 2, 0) / d.length) / (dm || 1);
+    const fit = rhyFitSpacing(sv, idx);
+    const sz = P.map(p => p.size), szTrend = sz[sz.length - 1] / sz[0];
+    const persp = P.length >= 4 && fit.ep < .55 * fit.eu && (szTrend < .8 || szTrend > 1.25) && cv > .08;
+    const resid = (persp ? fit.ep : fit.eu) / (dm || 1);
+    if (resid > .22) continue;                                       // шаг не равномерный и не перспективный
+    const periodic = Math.max(0, 1 - resid / .22);
+    let inter = 0;
+    for (let c = 0; c < n; c++){
+      if (g.chain.includes(c)) continue; const C = I[c];
+      if (P.some(p => C.x >= p.b.x0 && C.x <= p.b.x1 && C.y >= p.b.y0 && C.y <= p.b.y1)) continue;   // тот же предмет, найденный на другом уровне тона
+      const cs = (C.x - mx) * ux + (C.y - my) * uy, cq = -(C.x - mx) * uy + (C.y - my) * ux, s0 = Math.min(s[0], s[s.length - 1]) * (s[s.length-1] < s[0] ? -1 : 1);
+      if (Math.abs(cq - (q.reduce((a, v) => a + v, 0) / q.length)) > .3 * dm || instSim(P[0], C, true) < .6) continue;
+      const sc = s[s.length - 1] >= s[0] ? cs : -cs; if (sc > s[0] + .2 * dm && sc < s[s.length - 1] - .2 * dm) inter++;
+    }
+    if (inter && !curved) continue;
+    // ряд должен выделяться: если вокруг элементов полно таких же (толпа, рассыпанные точки), это поле, а не ритм
+    let crowd = 0;
+    for (let c = 0; c < n; c++){
+      if (g.chain.includes(c)) continue; const C = I[c];
+      if (P.some(p => C.x >= p.b.x0 && C.x <= p.b.x1 && C.y >= p.b.y0 && C.y <= p.b.y1)) continue;
+      if (instSim(P[0], C, true) < .5) continue;
+      if (P.some(p => Math.hypot(p.x - C.x, p.y - C.y) < .8 * dm)) crowd++;
+    }
+    if (crowd >= Math.max(2, .5 * P.length)) continue;
+    let app = 0; for (let k = 1; k < P.length; k++) app += instSim(P[k-1], P[k], true); app /= P.length - 1;
+    const countS = Math.min(1, (cnt - 2) / 4), outl = g.gaps.length / cnt;
+    const confidence = Math.max(0, Math.min(1, .4 * periodic + .35 * app + .25 * countS - .3 * outl));
+    const relSize = sz.reduce((a, v) => a + v, 0) / sz.length / md;
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const p of P){ const r = p.size * .7; x0 = Math.min(x0, p.x - r); y0 = Math.min(y0, p.y - r); x1 = Math.max(x1, p.x + r); y1 = Math.max(y1, p.y + r); }
+    const roiFrac = (x1 - x0) * (y1 - y0) / (w * h);
+    const prom = Math.min(1, P.reduce((a, p) => a + p.contrast, 0) / P.length / 70);
+    const texture = (cnt >= 9 && relSize < .07) || relSize < .035;    // мелкая плотная фактура, а не ритм кадра
+    const strength = Math.max(0, Math.min(1, .35 * Math.min(1, relSize / .12) + .25 * prom + .2 * Math.min(1, roiFrac / .15) + .2 * countS - (texture ? .45 : 0)));
+    const axis = curved ? null : ((th * 180 / Math.PI) + 180) % 180;
+    const els = P.filter(p => p.elong > 1.6);
+    let motif = null;
+    if (els.length >= P.length * .6){ let c2 = 0, s2 = 0; for (const p of els){ c2 += Math.cos(p.ori * Math.PI / 90); s2 += Math.sin(p.ori * Math.PI / 90); } motif = ((Math.atan2(s2, c2) * 90 / Math.PI) + 180) % 180; }
+    chains.push({inst:g.chain, P, gaps:g.gaps, cnt, axis, curved, persp, cv, confidence, strength, texture, relSize, motif, deep:persp ? (szTrend < 1 ? 1 : -1) : 0,
+      roi:[x0 / w, y0 / h, (x1 - x0) / w, (y1 - y0) / h], score:confidence * (.5 + strength) * Math.sqrt(cnt)});
+  }
+  chains.sort((a, c) => c.score - a.score);
+  // сетки: цепочки одного мотива с непараллельными осями и общими элементами
+  const groups = [], taken = new Set();
+  for (const c of chains){
+    if (c.confidence < .55 || c.strength < .3) continue;
+    if (c.inst.some(k => taken.has(k))) continue;
+    const fam = chains.filter(o => o !== c && o.confidence >= .5 && o.axis != null && c.axis != null && o.inst.some(k => c.inst.includes(k) || o.inst.some(() => false)));
+    const cross = chains.filter(o => o.axis != null && c.axis != null && angDiff(o.axis, c.axis) > 30 && o.confidence >= .5 && o.inst.some(k => c.inst.includes(k)));
+    if (cross.length){
+      // строки — цепочки, параллельные c и связанные с поперечными; столбцы — поперечные
+      const ax2 = cross[0].axis, rows = chains.filter(o => o.axis != null && angDiff(o.axis, c.axis) < 12 && o.confidence >= .5 && cross.some(x => x.inst.some(k => o.inst.includes(k))));
+      const cols = chains.filter(o => o.axis != null && angDiff(o.axis, ax2) < 12 && o.confidence >= .5 && rows.some(r => r.inst.some(k => o.inst.includes(k))));
+      const all = new Set(); rows.forEach(r => r.inst.forEach(k => all.add(k))); cols.forEach(r => r.inst.forEach(k => all.add(k)));
+      const P = [...all].map(k => I[k]);
+      let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const p of P){ const r = p.size * .7; x0 = Math.min(x0, p.x - r); y0 = Math.min(y0, p.y - r); x1 = Math.max(x1, p.x + r); y1 = Math.max(y1, p.y + r); }
+      // строки и столбцы считаем по самим элементам: сколько разных положений вдоль каждой оси
+      const levels = (axDeg, step) => { const a = (axDeg + 90) * Math.PI / 180, v = P.map(p => p.x * Math.cos(a) + p.y * Math.sin(a)).sort((x, y) => x - y);
+        let k = 1; for (let i = 1; i < v.length; i++) if (v[i] - v[i-1] > step) k++; return k; };
+      const tol = .35 * Math.min(...P.map(p => p.size));
+      const nRows = levels(c.axis, tol), nCols = levels(ax2, tol);
+      if (nRows >= 2 && nCols >= 2){
+        all.forEach(k => taken.add(k));
+        groups.push({kind:'grid', axes:[c.axis, ax2], rows:rows.map(r => r.P.map(p => [p.x / w, p.y / h])), cols:cols.map(r => r.P.map(p => [p.x / w, p.y / h])),
+          inst:P.map(p => ({x:p.x / w, y:p.y / h, s:p.size / md, o:p.elong > 1.6 ? p.ori : null})), pix:[...all].map(k => I[k].b.pix),
+          count:P.length, gridRC:[nRows, nCols], res:[w, h], confidence:c.confidence, strength:Math.min(1, c.strength + .1),
+          roi:[x0 / w, y0 / h, (x1 - x0) / w, (y1 - y0) / h], motif:c.motif, texture:c.texture});
+        continue;
+      }
+    }
+    if (c.texture || c.cnt < minRep) continue;
+    if (c.cnt === 3 && c.confidence < .8) continue;                   // ряд из трёх — только очень уверенный, иначе случайные совпадения
+    c.inst.forEach(k => taken.add(k));
+    const kind = c.curved ? 'curved_sequence' : c.persp ? 'perspective_sequence' : (c.axis < 12 || c.axis > 168) ? 'horizontal_sequence' : (c.axis > 78 && c.axis < 102) ? 'vertical_sequence' : 'diagonal_sequence';
+    // где был пропуск — предсказанная позиция выброса
+    const outl = c.gaps.map(G => { const t = c.inst.indexOf(G.after), A = I[c.inst[t]], B = I[c.inst[t + (G.dirn > 0 ? 1 : -1)]]; return B ? {x:(A.x + B.x) / 2 / w, y:(A.y + B.y) / 2 / h} : null; }).filter(Boolean);
+    groups.push({kind, axis:c.axis, motif:c.motif, inst:c.P.map(p => ({x:p.x / w, y:p.y / h, s:p.size / md, o:p.elong > 1.6 ? p.ori : null})), pix:c.inst.map(k => I[k].b.pix),
+      count:c.cnt, outliers:outl, res:[w, h], metre:!c.persp && !c.curved && c.cv < .07, deep:c.deep, confidence:c.confidence, strength:c.strength, roi:c.roi});
+    if (groups.length >= 3) break;
+  }
+  // элементы, соединённые перекладиной, — одно большое пятно, которое тянется вдоль всего ряда
+  const joined = lrnSegment(L, w, h, Math.max(20, w * h * .004), w * h * .5).blobs.filter(b => b.area / ((b.x1 - b.x0 + 1) * (b.y1 - b.y0 + 1)) < .45);
+  for (const [dir, list] of [['h', rhyFind(R.Gx, w, h, minRep, R.Sx)], ['v', rhyFind(lrnTp(R.Gy, w, h), h, w, minRep, lrnTp(R.Sy, w, h))]]){
+    for (const q of list){
+      if (groups.length >= 3) break;
+      if (q.pos.length < Math.max(minRep, 5)) continue;               // запасной путь — только для длинных рядов
+      const mid = (q.a0 + q.a1) / 2, pts = q.pos.map(p => dir === 'h' ? {x:p / w, y:mid / h} : {x:mid / w, y:p / h});
+      const x0 = Math.min(...pts.map(p => p.x)), x1 = Math.max(...pts.map(p => p.x)), y0 = Math.min(...pts.map(p => p.y)), y1 = Math.max(...pts.map(p => p.y));
+      const roi = dir === 'h' ? [x0, q.a0 / h, x1 - x0, (q.a1 - q.a0) / h] : [q.a0 / w, y0, (q.a1 - q.a0) / w, y1 - y0];
+      const ov = g => { const ax = Math.max(roi[0], g.roi[0]), ay = Math.max(roi[1], g.roi[1]), bx = Math.min(roi[0] + roi[2], g.roi[0] + g.roi[2]), by = Math.min(roi[1] + roi[3], g.roi[1] + g.roi[3]); return Math.max(0, bx - ax) * Math.max(0, by - ay) / Math.max(1e-6, Math.min(roi[2] * roi[3], g.roi[2] * g.roi[3])); };
+      if (groups.some(g => ov(g) > .3)) continue;
+      const span0 = q.pos[0], span1 = q.pos[q.pos.length - 1];
+      const jb = joined.find(b => dir === 'h'
+        ? b.x0 <= span0 + 2 && b.x1 >= span1 - 2 && b.y0 <= q.a1 && b.y1 >= q.a0
+        : b.y0 <= span0 + 2 && b.y1 >= span1 - 2 && b.x0 <= q.a1 && b.x1 >= q.a0);
+      if (!jb) continue;
+      // мелкая фактура (кладка, плитка): сеть швов покрывает весь кадр, элементов много и они мелкие
+      if ((jb.x1 - jb.x0 > .8 * w && jb.y1 - jb.y0 > .8 * h) || (q.pos.length >= 12 && q.gap / md < .08)) continue;
+      groups.push({kind:q.deep ? 'perspective_sequence' : dir === 'h' ? 'horizontal_sequence' : 'vertical_sequence', axis:dir === 'h' ? 0 : 90, motif:dir === 'h' ? 90 : 0,
+        inst:pts.map(p => ({x:p.x, y:p.y, s:q.gap * .4 / md, o:null})), pix:[], count:q.pos.length, outliers:[], metre:q.metre, deep:dir === 'h' ? q.deep : 0, deepV:dir === 'v' ? q.deep : 0,
+        confidence:Math.min(1, .5 + .3 * q.cs), strength:.6, roi, edges:true, res:[w, h]});
+    }
+  }
+  return {groups, frame_has_strong_rhythm:groups.some(g => g.strength >= .5 && g.confidence >= .65), nInst:n};
+}
+
 const SYM_T = .55, SYM_D = .2;
 function lrnRaw(R, opt){
   const {w, h, L, Gx, Gy, E, Em} = R, out = {};
@@ -1189,9 +1444,7 @@ function lrnRaw(R, opt){
     out.scales = scalesFind(R);
   }
   if (opt.rhy){
-    out.rhy = rhyFind(Gx, w, h, opt.rep, R.Sx).map(r => ({...r, dir:'h'}))
-      .concat(rhyFind(lrnTp(Gy, w, h), h, w, opt.rep, lrnTp(R.Sy, w, h)).map(r => ({...r, dir:'v'})))
-      .sort((a, b) => b.sc - a.sc).slice(0, 3);
+    out.rhy = rhyGroups(R, opt.rep).groups;                         // ритм по экземплярам (ТЗ референс-пакета)
   }
   if (opt.sim) out.sim = simFind(L, w, h, opt.thr);
   if (opt.bal) out.bal = balFind(R);
@@ -1226,7 +1479,24 @@ const lrnPx = document.createElement('canvas'), lrnPxCx = lrnPx.getContext('2d')
 let lrnLast = 0;
 const lrnHold = {sym:{show:null, hit:0, miss:9}, rhy:{show:null, hit:0, miss:9}, sim:{show:null, hit:0, miss:9}, edge:{show:null, hit:0, miss:9}, depth:{show:null, hit:0, miss:9}, scales:{show:null, hit:0, miss:9}};
 let balM = 0, balV = 0;
-function lrnReset(){ for (const k in lrnHold) lrnHold[k] = {show:null, hit:0, miss:9}; balM = balV = 0; const c = $('learn'); c.getContext('2d').clearRect(0, 0, c.width, c.height); lrnLast = 0; }
+// Ритм: группа показывается, когда держится два анализа подряд на том же месте с той же осью, и гаснет после двух промахов
+let rhyTr = [];
+function rhyTrack(gs){
+  const iou = (a, b) => { const x0 = Math.max(a[0], b[0]), y0 = Math.max(a[1], b[1]), x1 = Math.min(a[0] + a[2], b[0] + b[2]), y1 = Math.min(a[1] + a[3], b[1] + b[3]);
+    const i = Math.max(0, x1 - x0) * Math.max(0, y1 - y0); return i / (a[2] * a[3] + b[2] * b[3] - i + 1e-9); };
+  const same = (t, g) => (t.g.kind === 'grid') === (g.kind === 'grid') && iou(t.g.roi, g.roi) > .3 &&
+    (t.g.axis == null || g.axis == null || angDiff(t.g.axis, g.axis) < 12);
+  const next = [];
+  for (const g of gs){
+    const t = rhyTr.find(t => !t.used && same(t, g));
+    if (t){ t.used = true; next.push({g, hit:t.hit + 1, miss:0}); } else next.push({g, hit:1, miss:0});
+  }
+  for (const t of rhyTr) if (!t.used && t.hit >= 2 && t.miss < 1) next.push({g:t.g, hit:t.hit, miss:t.miss + 1});
+  rhyTr = next;
+  const show = rhyTr.filter(t => t.hit >= 2).map(t => t.g);
+  return show.length ? show : null;
+}
+function lrnReset(){ rhyTr = []; for (const k in lrnHold) lrnHold[k] = {show:null, hit:0, miss:9}; balM = balV = 0; const c = $('learn'); c.getContext('2d').clearRect(0, 0, c.width, c.height); lrnLast = 0; }
 // Подсветка появляется, когда находка держится два анализа подряд, и гаснет после двух промахов — без мигания
 function lrnKeep(k, cur){
   const H = lrnHold[k];
@@ -1239,6 +1509,7 @@ function lrnKeep(k, cur){
 let lrnWorker = null, lrnBusy = false, lrnSeq = 0;
 try {
   const fns = [lrnFromPixels, lrnTp, symFind, rhyChain, rhyFind, otsu, lrnSegment, simFind, blobSim, shapeSim, boxBlur,
+    rhyInstances, extAlong, angDiff, instSim, rhyGrow, rhyFitSpacing, rhyGroups,
     balFind, gazeFind, edgeFind, houghLines, depthFind, scalesFind, lrnRaw];
   const src = `const SG = ${SG}, SYM_T = ${SYM_T}, SYM_D = ${SYM_D};\n` + fns.map(f => f.toString()).join('\n') +
     `\nonmessage = e => { const {id, px, w, h, opt} = e.data; let R = null, r = null;
@@ -1272,18 +1543,27 @@ function lrnShow(R, r){
   const res = {
     sym: S.lSym ? lrnKeep('sym', r.sym && r.sym.length ? r.sym : null) : null,
     scales: S.lSym ? lrnKeep('scales', r.scales || null) : null,
-    rhy: S.lRhy ? lrnKeep('rhy', r.rhy && r.rhy.length ? r.rhy : null) : null,
+    rhy: S.lRhy ? rhyTrack(r.rhy || []) : null,
     sim: S.lSim ? lrnKeep('sim', r.sim && r.sim.groups.length ? r.sim : null) : null,
     bal: S.lBal ? r.bal || null : null, gaze: S.lGaze && r.gaze && r.gaze.pts.length ? r.gaze : null,
     edge: S.lEdge ? lrnKeep('edge', r.edge || null) : null,
     depth: S.lDepth ? lrnKeep('depth', r.depth || null) : null,
   };
-  const fr = $('frame').getBoundingClientRect();
-  lrnDraw(R, res, $('learn'), fr.width, fr.height);
+  const fr = $('frame').getBoundingClientRect(), avoid = [];
+  for (const id of ['shiftread', 'lctl', 'histo', 'bSv']){ const e = $(id); if (!e || e.hidden || e.offsetParent === null) continue;
+    const r = e.getBoundingClientRect(); if (r.width) avoid.push([r.left - fr.left - 4, r.top - fr.top - 4, r.right - fr.left + 4, r.bottom - fr.top + 4]); }
+  lrnDraw(R, res, $('learn'), fr.width, fr.height, avoid);
 }
 // метр — одинаковый шаг, ритм — шаг меняется; стрелка — куда ряд уходит вглубь
-const rhyText = q => `${q.metre ? 'метр' : 'ритм'} ×${q.pos.length}` + (q.deep ? `, вглубь ${q.dir === 'h' ? (q.deep > 0 ? '→' : '←') : (q.deep > 0 ? '↓' : '↑')}` : '');
-function lrnDraw(R, res, c, cssW, cssH){
+const rhyText = g => {
+  if (g.kind === 'grid') return `сетка ${g.gridRC[0]}×${g.gridRC[1]}`;
+  let t = g.kind === 'curved_sequence' ? `ритм по дуге ×${g.count}` : `${g.metre ? 'метр' : 'ритм'} ×${g.count}`;
+  if (g.kind === 'perspective_sequence') t += ', вглубь';
+  if (g.kind === 'diagonal_sequence') t += `, ось ${Math.round(g.axis) % 180}°`;
+  if (g.outliers && g.outliers.length) t += ', один выбивается';
+  return t;
+};
+function lrnDraw(R, res, c, cssW, cssH, avoid){
   const {w, h} = R, dpr = Math.min(2, window.devicePixelRatio || 1);
   const CW = Math.max(2, Math.round(cssW * dpr)), CH = Math.max(2, Math.round(cssH * dpr));
   if (c.width !== CW || c.height !== CH){ c.width = CW; c.height = CH; }
@@ -1291,7 +1571,7 @@ function lrnDraw(R, res, c, cssW, cssH){
   const sx = CW / w, sy = CH / h, img = new ImageData(w, h), d = img.data;
   const mark = (i, col, a) => { const o = i * 4; if (d[o+3] >= a) return; d[o] = col[0]; d[o+1] = col[1]; d[o+2] = col[2]; d[o+3] = a; };
   const rgba = (col, a) => `rgba(${col[0]},${col[1]},${col[2]},${a})`;
-  const boxes = [];
+  const boxes = (avoid || []).map(r => [r[0] * dpr, r[1] * dpr, r[2] * dpr, r[3] * dpr]);   // подписи обходят кнопки видоискателя
   const label = (t, col, px, py, al) => {
     x.font = `${Math.round(15 * dpr)}px ${getComputedStyle(document.body).getPropertyValue('--eng')}`;
     const tw = x.measureText(t.toUpperCase()).width, lh = 17 * dpr;
@@ -1339,33 +1619,44 @@ function lrnDraw(R, res, c, cssW, cssH){
       label('композиция «весы»', LC.sym, CW / 2, my - 18 * dpr, 'center');
     });
   }
-  // Ритм: контуры повторяющихся элементов, метки на каждом элементе и скобка с числом повторов
-  for (const q of res.rhy || []){
-    const G = q.dir === 'h' ? R.Gx : R.Gy, gm = q.dir === 'h' ? R.Gxm : R.Gym, p0 = q.pos[0], p1 = q.pos[q.pos.length - 1], hg = q.gap * .5;
-    for (let a = q.a0; a < q.a1; a++) for (let p = Math.max(0, Math.round(p0 - 2)); p <= Math.min((q.dir === 'h' ? w : h) - 1, Math.round(p1 + 2)); p++){
-      const i = q.dir === 'h' ? a * w + p : p * w + a;
-      if (G[i] > 1.6 * gm && q.pos.some(e => Math.abs(e - p) <= Math.max(2, hg * .45))) mark(i, LC.rhy, 170);
-    }
-    // где по высоте (или ширине) элементы действительно есть
-    let e0 = q.a1, e1 = q.a0;
-    for (const e of q.pos) for (let a = q.a0; a < q.a1; a++){
-      let v = 0; for (let k = -1; k <= 1; k++){ const p = Math.max(0, Math.min((q.dir === 'h' ? w : h) - 1, e + k)); v = Math.max(v, G[q.dir === 'h' ? a * w + p : p * w + a]); }
-      if (v > 1.6 * gm){ if (a < e0) e0 = a; if (a + 1 > e1) e1 = a + 1; }
-    }
-    if (e1 <= e0){ e0 = q.a0; e1 = q.a1; }
-    vec.push(() => {
-      x.strokeStyle = rgba(LC.rhy, .9); x.lineWidth = 2 * dpr; x.setLineDash([]);
-      if (q.dir === 'h'){
-        const yb = Math.min(CH - 8 * dpr, e1 * sy + 5 * dpr);
-        x.beginPath(); for (const e of q.pos){ const X = (e + .5) * sx; x.moveTo(X, e0 * sy); x.lineTo(X, e1 * sy); } x.globalAlpha = .45; x.stroke(); x.globalAlpha = 1;
-        x.beginPath(); x.moveTo((p0 + .5) * sx, yb); x.lineTo((p1 + .5) * sx, yb); for (const e of q.pos){ x.moveTo((e + .5) * sx, yb - 5 * dpr); x.lineTo((e + .5) * sx, yb + 5 * dpr); } x.stroke();
-        label(rhyText(q), LC.rhy, (p0 + .5) * sx, yb + 13 * dpr > CH - 26 * dpr ? e0 * sy - 12 * dpr : yb + 13 * dpr);   // у нижнего края — над элементами
-      } else {
-        const xb = Math.min(CW - 8 * dpr, e1 * sx + 5 * dpr);
-        x.beginPath(); for (const e of q.pos){ const Y = (e + .5) * sy; x.moveTo(e0 * sx, Y); x.lineTo(e1 * sx, Y); } x.globalAlpha = .45; x.stroke(); x.globalAlpha = 1;
-        x.beginPath(); x.moveTo(xb, (p0 + .5) * sy); x.lineTo(xb, (p1 + .5) * sy); for (const e of q.pos){ x.moveTo(xb - 5 * dpr, (e + .5) * sy); x.lineTo(xb + 5 * dpr, (e + .5) * sy); } x.stroke();
-        label(rhyText(q), LC.rhy, xb - 6 * dpr, (p0 + .5) * sy - 12 * dpr, 'right');
+  // Ритм: элементы ряда (точки и контуры), ось ряда, область, ориентация самих элементов — отдельно от оси
+  for (const g of res.rhy || []){
+    if (g.pix && g.res && g.res[0] === w && g.res[1] === h){
+      for (const pix of g.pix){
+        const m = new Set(pix);
+        for (const i of pix){ const px = i % w, py = (i - px) / w;
+          if (px === 0 || py === 0 || px === w - 1 || py === h - 1 || !m.has(i-1) || !m.has(i+1) || !m.has(i-w) || !m.has(i+w)) mark(i, LC.rhy, 210); else mark(i, LC.rhy, 35); }
       }
+    }
+    const al = .45 + .55 * Math.min(1, g.strength || .6), md = Math.min(CW, CH);
+    vec.push(() => {
+      const X = p => p.x * CW, Y = p => p.y * CH;
+      x.setLineDash([5 * dpr, 5 * dpr]); x.strokeStyle = rgba(LC.rhy, .45 * al); x.lineWidth = 1.2 * dpr;
+      x.strokeRect(g.roi[0] * CW, g.roi[1] * CH, g.roi[2] * CW, g.roi[3] * CH);
+      x.setLineDash([]); x.strokeStyle = rgba(LC.rhy, .95 * al); x.lineWidth = 2.5 * dpr;
+      const line = pts => { x.beginPath(); pts.forEach((p, k) => k ? x.lineTo(p[0] * CW, p[1] * CH) : x.moveTo(p[0] * CW, p[1] * CH)); x.stroke(); };
+      if (g.kind === 'grid'){ x.globalAlpha = .7; g.rows.forEach(line); g.cols.forEach(line); x.globalAlpha = 1; }
+      else line(g.inst.map(p => [p.x, p.y]));
+      for (const p of g.inst){
+        const r = Math.max(4 * dpr, p.s * md * .32);
+        x.fillStyle = rgba(LC.rhy, .9 * al); x.beginPath(); x.arc(X(p), Y(p), 3.2 * dpr, 0, 2 * Math.PI); x.fill();
+        if (p.o != null){                                        // ориентация самого элемента
+          const a = p.o * Math.PI / 180; x.strokeStyle = 'rgba(255,255,255,.8)'; x.lineWidth = 1.5 * dpr;
+          x.beginPath(); x.moveTo(X(p) - Math.cos(a) * r, Y(p) - Math.sin(a) * r); x.lineTo(X(p) + Math.cos(a) * r, Y(p) + Math.sin(a) * r); x.stroke();
+        }
+      }
+      for (const o of g.outliers || []){                         // место элемента, который выбивается из ряда
+        x.strokeStyle = rgba(LC.rhy, .9); x.lineWidth = 1.5 * dpr; x.setLineDash([3 * dpr, 3 * dpr]);
+        x.beginPath(); x.arc(o.x * CW, o.y * CH, 8 * dpr, 0, 2 * Math.PI); x.stroke(); x.setLineDash([]);
+      }
+      if (g.kind === 'perspective_sequence' && g.inst.length >= 2){   // стрелка в сторону, где элементы мельчают
+        const sm = g.inst[0].s > g.inst[g.inst.length - 1].s, a = sm ? g.inst[g.inst.length - 2] : g.inst[1], b = sm ? g.inst[g.inst.length - 1] : g.inst[0];
+        const an = Math.atan2(Y(b) - Y(a), X(b) - X(a)), ex = X(b) + Math.cos(an) * 14 * dpr, ey = Y(b) + Math.sin(an) * 14 * dpr;
+        x.fillStyle = rgba(LC.rhy, .95); x.beginPath(); x.moveTo(ex, ey);
+        x.lineTo(ex - Math.cos(an - .45) * 10 * dpr, ey - Math.sin(an - .45) * 10 * dpr); x.lineTo(ex - Math.cos(an + .45) * 10 * dpr, ey - Math.sin(an + .45) * 10 * dpr); x.fill();
+      }
+      const p0 = g.inst[0];
+      label(rhyText(g), LC.rhy, g.roi[0] * CW, g.roi[1] * CH - 11 * dpr < 12 * dpr ? (g.roi[1] + g.roi[3]) * CH + 12 * dpr : g.roi[1] * CH - 11 * dpr);
     });
   }
   // Похожие формы: контуры силуэтов и связки с процентом похожести
@@ -1946,7 +2237,14 @@ async function vLearn(){
   const w = Math.max(24, Math.round(iw * k)), h = Math.max(24, Math.round(ih * k));
   if (lrnCan.width !== w || lrnCan.height !== h){ lrnCan.width = w; lrnCan.height = h; }
   lrnCx.drawImage(im, 0, 0, w, h); if (im.close) im.close();
-  const R = lrnFromPixels(lrnCx.getImageData(0, 0, w, h).data, w, h), r = lrnRaw(R, lrnOpt());
+  const R = lrnFromPixels(lrnCx.getImageData(0, 0, w, h).data, w, h), r = lrnRaw(R, {...lrnOpt(), rhy:false});
+  if (S.lRhy){                                               // в разборе ритм ищется по кадру вдвое крупнее — точнее для мелких элементов
+    const c2 = document.createElement('canvas'); c2.width = w * 2; c2.height = h * 2;
+    const x2 = c2.getContext('2d', {willReadFrequently:true}); x2.drawImage(lrnCan, 0, 0, w, h, 0, 0, w * 2, h * 2);
+    try { const b2 = await createImageBitmap(s.blob); x2.drawImage(b2, 0, 0, w * 2, h * 2); if (b2.close) b2.close(); } catch(e){}
+    if (tok !== vlrnTok) return;
+    r.rhy = rhyGroups(lrnFromPixels(x2.getImageData(0, 0, w * 2, h * 2).data, w * 2, h * 2), S.lRep).groups;
+  }
   const res = {sym:r.sym && r.sym.length ? r.sym : null, scales:r.scales || null, rhy:r.rhy && r.rhy.length ? r.rhy : null, sim:r.sim && r.sim.groups.length ? r.sim : null,
     bal:r.bal || null, gaze:r.gaze && r.gaze.pts.length ? r.gaze : null, edge:r.edge || null, depth:r.depth || null};
   c.style.left = vimg.offsetLeft + 'px'; c.style.top = vimg.offsetTop + 'px';
@@ -2306,7 +2604,7 @@ buildChips($('lrnbar')); buildChips($('vlrnbar'));
 
 /* Ползунок силы похожести — в видоискателе, чтобы подстраивать, глядя на кадр */
 $('lctl').addEventListener('pointerdown', e => e.stopPropagation());
-$('lrepr').addEventListener('input', () => { S.lRep = +$('lrepr').value; $('lrepv').textContent = `ритм от ${S.lRep}`; lrnHold.rhy = {show:null, hit:0, miss:9}; lrnLast = 0; });
+$('lrepr').addEventListener('input', () => { S.lRep = +$('lrepr').value; $('lrepv').textContent = `ритм от ${S.lRep}`; rhyTr = []; lrnLast = 0; });
 $('lrepr').addEventListener('change', () => { saveS(); vLearn(); });
 $('lsimr').addEventListener('input', () => { S.lThr = +$('lsimr').value; $('lsimv').textContent = `похожие ${S.lThr}%`; lrnLast = 0; });
 $('lsimr').addEventListener('change', () => { saveS(); vLearn(); });
