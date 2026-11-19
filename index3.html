@@ -183,7 +183,8 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
 .cell img{width:100%;height:100%;object-fit:cover;display:block}
 .cell i{position:absolute;right:5px;top:3px;font-style:normal;color:var(--brass);font-size:16px;text-shadow:0 0 3px #000}
 #gempty{color:var(--dim);padding:40px 28px;line-height:1.45;grid-column:1/-1}
-.gbar{flex-wrap:wrap;justify-content:center;padding-bottom:12px;gap:6px}
+.gbar{align-items:flex-end;padding-bottom:12px;gap:8px}
+.gbtns{flex:1;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}
 .gbar .btn{padding-left:10px;padding-right:10px}
 
 #viewer{z-index:20}
@@ -191,14 +192,16 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
 #vlearn{position:absolute;pointer-events:none;transform-origin:center center}
 #vimg{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center center}
 #vmeta{text-align:center;font:400 15px/1 var(--eng);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);padding:8px 10px 0;min-height:23px}
-.vbar{justify-content:center;padding-bottom:14px}
+.vbar{padding-bottom:14px}
 #vstar.on{color:#000}
 
 /* Невидимка: чёрный экран, весь экран — спуск */
 #stealth{position:fixed;inset:0;z-index:25;background:#000;touch-action:none}
+#sleep{position:fixed;inset:0;z-index:26;background:#000;touch-action:none;display:flex;align-items:center;justify-content:center}
+#sleepmsg{color:#5a5752;text-align:center;font:400 22px/1.3 var(--eng);letter-spacing:.08em;text-transform:uppercase}
+#sleepmsg small{font:400 13px/1.4 var(--ui);letter-spacing:0;text-transform:none;color:#45423e}
 #stealth.ghostly{background:rgba(0,0,0,.84)}
-#sexit{position:absolute;right:calc(env(safe-area-inset-right) + 14px);top:calc(env(safe-area-inset-top) + 14px);
-  width:64px;height:64px;border-radius:50%;border:1px solid #2b2b2b;color:#3a3a3a;font-size:20px}
+#sexit{position:absolute;border-radius:50%;border:1px solid #161616;background:none}   /* на месте кнопки невидимки */
 #scount{position:absolute;left:0;right:0;bottom:calc(env(safe-area-inset-bottom) + 30px);text-align:center;
   font:400 26px var(--eng);letter-spacing:.1em;color:#333;pointer-events:none;transition:color .5s}
 #scount.hit{color:#8a8a8a;transition:none}
@@ -249,6 +252,8 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
       <button id="thumb" aria-label="Снимки"><b id="count"></b></button>
       <button class="rnd" id="bStealth" aria-label="Невидимка">
         <svg viewBox="0 0 24 24"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 20L20 4"/></svg></button>
+      <button class="rnd" id="bSleep" aria-label="Экономия энергии: выключить камеру">
+        <svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.4 6.6a8 8 0 1 0 11.2 0"/></svg></button>
       <button id="shutter" aria-label="Снять"><i></i></button>
       <button class="rnd" id="lens" aria-label="Сменить камеру"><svg viewBox="0 0 24 24"><path d="M4 9a8 8 0 0 1 14.5-3M20 15a8 8 0 0 1-14.5 3"/><path d="M19 2v4.5h-4.5M5 22v-4.5h4.5"/></svg></button>
       <button class="rnd" id="bMenu" aria-label="Режимы">
@@ -275,13 +280,15 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
   <div class="bar">
     <span class="cnt" id="gcount"></span><span class="sp"></span>
     <button class="btn" id="gfilter">★ Отобранные</button>
-    <button class="x" id="gclose" aria-label="Закрыть">✕</button>
   </div>
   <div id="ggrid"></div>
   <div class="bar gbar">
-    <button class="btn on" id="gsave">Сохранить все</button>
-    <button class="btn" id="gsheet">Контактный лист</button>
-    <button class="btn" id="gcull">Удалить без ★</button>
+    <button class="x" id="gclose" aria-label="Закрыть">✕</button>
+    <div class="gbtns">
+      <button class="btn on" id="gsave">Сохранить все</button>
+      <button class="btn" id="gsheet">Контактный лист</button>
+      <button class="btn" id="gcull">Удалить без ★</button>
+    </div>
   </div>
 </div>
 
@@ -289,22 +296,24 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
   <div class="bar">
     <button class="btn" id="vgrid">Все снимки</button>
     <button class="btn" id="vlrn" aria-label="Разбор: подсказки обучения на снимке">Разбор</button>
-    <span class="cnt" id="vcount"></span><span class="sp"></span>
-    <button class="x" id="vclose" aria-label="Закрыть">✕</button>
+    <span class="sp"></span><span class="cnt" id="vcount"></span>
   </div>
   <div id="vwrap"><img id="vimg" alt=""><canvas id="vlearn" hidden></canvas></div>
   <div id="vmeta"></div>
   <div id="vlrnbar" hidden></div>
   <div class="bar vbar">
+    <button class="x" id="vclose" aria-label="Закрыть">✕</button>
+    <span class="sp"></span>
     <button class="btn" id="vstar" aria-label="Отобрать">★</button>
     <button class="btn on" id="vsave">В Фото</button>
     <button class="btn" id="vdel">Удалить</button>
   </div>
 </div>
 
+<div id="sleep" hidden><div id="sleepmsg">Камера выключена<br><small>Коснитесь экрана, чтобы включить</small></div></div>
 <div id="stealth" hidden>
-  <button id="sexit" aria-label="Выйти из невидимки">✕</button>
-  <div id="shint">Касание в любом месте — снимок.<br>Кружок в углу — выход.</div>
+  <button id="sexit" aria-label="Выйти из невидимки"></button>
+  <div id="shint">Касание в любом месте — снимок.<br>Выход — та же кнопка, что и вход.</div>
   <div id="scount"></div>
 </div>
 <div id="toast"></div>
@@ -1851,8 +1860,8 @@ let lastLoop = 0;
 function frameLoop(){
   const now = performance.now(); lastLoop = now;
   drawPreview();
-  if (S.learn && now - lrnLast > 200 && video.videoWidth && $('stealth').hidden) learnTick(now);   // сразу после отрисовки, пока кадр в буфере
-  if ((S.histo || S.trap) && now - lastAn > 110 && video.videoWidth) analyze(now);
+  if (!sleeping && S.learn && now - lrnLast > 200 && video.videoWidth && $('stealth').hidden) learnTick(now);   // сразу после отрисовки, пока кадр в буфере
+  if (!sleeping && (S.histo || S.trap) && now - lastAn > 110 && video.videoWidth) analyze(now);
   if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(frameLoop); else requestAnimationFrame(frameLoop);
 }
 
@@ -2470,7 +2479,11 @@ const TILES = [
   ]],
   ['Съёмка', [
     {n:'Спуск касанием кадра', v:() => S.tap ? 'Да' : 'Нет', on:() => S.tap, tap:() => { S.tap = !S.tap; if (S.tap) toast('Жесты в видоискателе отключены: любое касание — снимок'); }},
-    {n:'Автоповорот снимка', v:() => S.autorot ? 'Да' : 'Нет', on:() => S.autorot, tap:async () => {
+    {n:'Автоповорот снимка', v:() => !S.autorot ? 'Нет' : motionAsked ? 'Да' : 'Нужен датчик', on:() => S.autorot && motionAsked, tap:async () => {
+      if (S.autorot && !motionAsked){                         // включён, но датчик ещё не разрешён — спросить
+        if (await askMotion()) toast('Снимок сохраняется верхом вверх, как бы вы ни держали телефон');
+        return;
+      }
       S.autorot = !S.autorot;
       if (S.autorot && !(await askMotion())) S.autorot = false;
       else if (S.autorot) toast('Снимок сохраняется верхом вверх, как бы вы ни держали телефон'); }},
@@ -2638,10 +2651,27 @@ SV_MODES.forEach((m, i) => {
   $('svmodes').appendChild(b);
 });
 
+/* Экономия энергии: камера и анализ останавливаются, экран можно гасить */
+let sleeping = false;
+function sleepOn(){
+  sleeping = true; stopInterval(); cancelMulti();
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  try { if (wl) wl.release(); } catch(e){} wl = null;
+  $('sleep').hidden = false;
+}
+async function sleepOff(){
+  if (!sleeping) return; sleeping = false; $('sleep').hidden = true;
+  try { await startCamera(S.lensId); wake(); } catch(e){ toast('Камера не включилась, нажмите ещё раз'); sleeping = true; $('sleep').hidden = false; }
+}
+$('bSleep').onclick = sleepOn;
+$('sleep').addEventListener('pointerdown', e => { e.preventDefault(); sleepOff(); });
+
 /* Невидимка */
 let hintT;
 $('bStealth').onclick = () => {
-  const s = $('stealth'); s.hidden = false; s.classList.toggle('ghostly', S.ghostly);
+  const s = $('stealth'), r = $('bStealth').getBoundingClientRect(), x = $('sexit').style, pad = 6;
+  x.left = (r.left - pad) + 'px'; x.top = (r.top - pad) + 'px'; x.width = (r.width + 2 * pad) + 'px'; x.height = (r.height + 2 * pad) + 'px';
+  s.hidden = false; s.classList.toggle('ghostly', S.ghostly);
   $('shint').style.opacity = 1; clearTimeout(hintT); hintT = setTimeout(() => $('shint').style.opacity = 0, 2600);
   updThumb();
 };
@@ -2660,7 +2690,7 @@ window.addEventListener('resize', layout);
 window.addEventListener('orientationchange', () => setTimeout(render, 300));
 document.addEventListener('visibilitychange', async () => {
   if (document.hidden){ stopInterval(); if (stream) stream.getTracks().forEach(t => t.stop()); }
-  else if ($('start').hidden) { try { await startCamera(S.lensId); wake(); } catch(e){} }
+  else if ($('start').hidden && !sleeping) { try { await startCamera(S.lensId); wake(); } catch(e){} }
 });
 
 /* ---------- Запуск ---------- */
@@ -2687,11 +2717,16 @@ async function go(){
 setInterval(() => { if (loopStarted && !document.hidden && performance.now() - lastLoop > 700) frameLoop(); }, 500);
 $('go').onclick = go;
 // Датчик наклона iOS разрешает запрашивать только в ответ на касание — спрашиваем при первом же касании экрана
-const firstTouch = () => {
+// Если шифт или горизонт остались включёнными с прошлого раза, датчик спрашивается при первом касании —
+// но не спуска и не невидимки, чтобы запрос не выскакивал после снимка. Автоповорот сам запрос не вызывает.
+const firstTouch = e => {
   if (motionAsked || motionDenied){ document.removeEventListener('pointerup', firstTouch, true); document.removeEventListener('click', firstTouch, true); return; }
-  if (!(S.level || S.shift || S.autorot)) return;
+  if (!(S.level || S.shift)) return;
+  const t = e && e.target; if (t && t.closest && t.closest('#shutter, #stealth, #sleep, #frame')) return;
   askMotion().then(ok => { if (!ok && motionDenied && (S.level || S.shift)){ S.level = 0; S.shift = false; saveS(); render(); syncLens(); } });
 };
+// где разрешение не нужно (не iOS), датчик подключается сразу и молча
+if (window.DeviceOrientationEvent && !DeviceOrientationEvent.requestPermission) askMotion();
 document.addEventListener('pointerup', firstTouch, true);
 document.addEventListener('click', firstTouch, true);
 if (!window.isSecureContext || !navigator.mediaDevices){
