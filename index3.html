@@ -281,10 +281,12 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
     <span class="cnt" id="gcount"></span><span class="sp"></span>
     <button class="btn" id="gfilter">★ Отобранные</button>
   </div>
+  <input type="file" id="impfile" accept="image/*" multiple hidden>
   <div id="ggrid"></div>
   <div class="bar gbar">
     <button class="x" id="gclose" aria-label="Закрыть">✕</button>
     <div class="gbtns">
+      <button class="btn" id="gimp">Разбор фото</button>
       <button class="btn on" id="gsave">Сохранить все</button>
       <button class="btn" id="gsheet">Контактный лист</button>
       <button class="btn" id="gcull">Удалить без ★</button>
@@ -2151,7 +2153,7 @@ function drawGallery(){
   g.innerHTML = '';
   if (!list.length){
     const e = document.createElement('div'); e.id = 'gempty';
-    e.textContent = gFilter ? 'Отобранных снимков пока нет. Откройте снимок и нажмите ★.' : 'Снимков пока нет. Закройте ленту и нажмите спуск.';
+    e.textContent = gFilter ? 'Отобранных снимков пока нет. Откройте снимок и нажмите ★.' : 'Снимков пока нет. Закройте ленту и нажмите спуск — или откройте любое фото из галереи телефона кнопкой «Разбор фото».';
     g.appendChild(e);
   }
   for (const i of list.slice().reverse()){
@@ -2212,25 +2214,45 @@ $('gsheet').onclick = async () => {
 
 /* ---------- Просмотр одного снимка ---------- */
 let vi = 0, vUrl = '';
+// Разбор чужих фото: снимки из галереи телефона смотрятся во временном списке и в ленту камеры не попадают
+let ext = null;
+const VL = () => ext || shots;
+function setExtUI(){
+  const on = !!ext;
+  $('vstar').hidden = on; $('vsave').hidden = on; $('vgrid').textContent = on ? 'Другие фото' : 'Все снимки';
+  $('vdel').textContent = on ? 'Убрать' : 'Удалить';
+}
+function openExt(files){
+  const list = [...files].filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|heic|heif|webp)$/i.test(f.name));
+  if (!list.length) return;
+  if (ext) closeViewer();
+  ext = list.map(f => ({blob:f, t:f.lastModified || Date.now(), meta:{x:f.name}}));
+  vi = 0; S.vLearn = true; saveS(); setExtUI(); showV(); $('viewer').hidden = false;
+  if (list.length > 1) toast(`${list.length} фото — листайте`);
+}
+$('gimp').onclick = () => { const i = $('impfile'); i.value = ''; i.click(); };
+$('impfile').onchange = e => openExt(e.target.files);
 function openViewer(){ if (!shots.length) return openGallery(); vi = shots.length - 1; showV(); $('viewer').hidden = false; }
-function closeViewer(){ $('viewer').hidden = true; $('vlearn').hidden = true; resetZoom(); if (vUrl){ URL.revokeObjectURL(vUrl); vUrl = ''; } $('vimg').removeAttribute('src'); if (!$('gallery').hidden) drawGallery(); }
+function closeViewer(){ $('viewer').hidden = true; if (ext){ ext = null; setExtUI(); } $('vlearn').hidden = true; resetZoom(); if (vUrl){ URL.revokeObjectURL(vUrl); vUrl = ''; } $('vimg').removeAttribute('src'); if (!$('gallery').hidden) drawGallery(); }
 function showV(){
-  if (!shots.length){ closeViewer(); return; }
-  vi = clamp(vi, 0, shots.length - 1);
-  const s = shots[vi], m = s.meta || {};
+  const L = VL();
+  if (!L.length){ closeViewer(); return; }
+  vi = clamp(vi, 0, L.length - 1);
+  const s = L[vi], m = s.meta || {};
   if (vUrl) URL.revokeObjectURL(vUrl);
   vUrl = URL.createObjectURL(s.blob);
   $('vimg').src = vUrl; resetZoom();
-  $('vcount').textContent = `${vi + 1} / ${shots.length}`;
+  $('vcount').textContent = `${vi + 1} / ${L.length}`;
   $('vstar').classList.toggle('on', !!s.star);
   const tm = new Date(s.t).toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
+  if (ext){ $('vmeta').textContent = 'Фото из галереи'; return; }
   $('vmeta').textContent = [tm, m.look, m.f, m.z ? m.z + '×' : (m.mm ? m.mm + ' мм' : ''), m.sheet ? '' : m.asp, m.x].filter(Boolean).join('   ');
 }
 $('vsave').onclick = () => shareFiles([fileOf(shots[vi])]);
 $('vstar').onclick = () => { const s = shots[vi]; if (!s) return; s.star = !s.star; starMap[s.id] = s.star ? 1 : 0; saveStars(); $('vstar').classList.toggle('on', s.star); };
-$('vdel').onclick = () => { delShot(vi); showV(); };
+$('vdel').onclick = () => { if (ext){ ext.splice(vi, 1); if (!ext.length) return closeViewer(); } else delShot(vi); showV(); };
 $('vclose').onclick = closeViewer;
-$('vgrid').onclick = () => { closeViewer(); openGallery(); };
+$('vgrid').onclick = () => { if (ext) return $('gimp').onclick(); closeViewer(); openGallery(); };
 $('thumb').onclick = openViewer;
 
 /* Разбор снятого кадра: те же подсказки, что в режиме обучения, но по готовому снимку */
@@ -2239,7 +2261,7 @@ async function vLearn(){
   const c = $('vlearn'), open = !$('viewer').hidden;
   $('vlrn').classList.toggle('on', S.vLearn); $('vlrnbar').hidden = !S.vLearn;
   if (!S.vLearn || !open){ c.hidden = true; return; }
-  const s = shots[vi], tok = ++vlrnTok; if (!s || !vimg.naturalWidth) return;
+  const s = VL()[vi], tok = ++vlrnTok; if (!s || !vimg.naturalWidth) return;
   let im; try { im = await createImageBitmap(s.blob); } catch(e){ im = vimg; }
   if (tok !== vlrnTok) return;
   const iw = im.width || im.naturalWidth, ih = im.height || im.naturalHeight, k = 160 / Math.max(iw, ih);
